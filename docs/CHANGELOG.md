@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- Made the PC bridge hands-off: `recv-ble` auto-reconnects when the device sleeps or moves out of range instead of exiting, and `tools/install-mic-agent.sh` installs it as a macOS LaunchAgent so it starts at login and is restarted on crash. The recording screen now shows a clean timer (with a "weak signal" warning only when the BLE link drops frames) instead of raw debug counters.
 - Stream raw 16 kHz PCM over BLE instead of IMA-ADPCM: ADPCM is a stateful differential codec, so a single dropped BLE notify corrupts the predictor and garbles the rest of the stream. Raw PCM is stateless — a dropped frame costs only 10 ms — and 256 kbps fits BLE's ~700 kbps with room to spare. Removed the ADPCM codec, its host test, and the Python decoder.
 - Fixed garbled/3x-speed virtual-mic audio: BlackHole runs at 48 kHz but the stream was opened at 16 kHz, so any app reading it (Doubao IME, QuickTime) heard sped-up noise. `recv-ble` now opens at the device's native rate and upsamples the 16 kHz device audio to match; it also writes every output channel (BlackHole is 2-ch) so stereo/right-channel readers aren't silent.
 - Relaxed the device's BLE-ready gate to "connected" rather than "connected and CCCD-subscribed": macOS/CoreBluetooth does not always surface the audio subscribe callback, which left the device stuck on "waiting for PC" even with a live connection. Notifications no-op harmlessly if the central hasn't subscribed.

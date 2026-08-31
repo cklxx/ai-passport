@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- PC 侧免手动：`recv-ble` 在设备休眠或走出范围时自动重连而非退出，`tools/install-mic-agent.sh` 把它装成 macOS LaunchAgent，登录即启、崩溃自愈。录音屏改为干净的计时（仅当 BLE 丢帧时提示「信号弱」），不再显示原始调试计数。
 - BLE 改传原始 16 kHz PCM，不再用 IMA-ADPCM：ADPCM 是有状态差分编码，BLE notify 丢一帧就会污染 predictor，之后整段音频全乱。原始 PCM 无状态——丢一帧只损失 10 ms——且 256 kbps 远低于 BLE 约 700 kbps 带宽。移除 ADPCM 编解码、主机测试和 Python 解码器。
 - 修复虚拟麦克风音频变成杂音/3 倍速：BlackHole 运行在 48 kHz，而流以 16 kHz 打开，任何读取它的应用（豆包、QuickTime）听到的都是加速噪声。`recv-ble` 现在按设备原生采样率打开并把 16 kHz 音频上采样对齐；同时写入每个输出声道（BlackHole 是双声道），避免读右声道/立体声的应用听到静音。
 - 放宽设备端 BLE 就绪判断为「已连接」而非「已连接且已订阅 CCCD」：macOS/CoreBluetooth 不总是上报 audio 订阅回调，导致设备连着却卡在「等待电脑」。未订阅时 notify 只是空操作，无害。

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchAgent for the AI-Passport BLE microphone bridge.
+     Runs island_agent.py recv-ble at login and keeps it alive (auto-restart on
+     crash; the agent itself auto-reconnects to the device). Install:
+
+       tools/install-mic-agent.sh
+
+     which templates PYTHON/REPO below and loads it. Logs: /tmp/aipassport-mic.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aipassport.mic</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>-u</string>
+        <string>__REPO__/tools/island_agent.py</string>
+        <string>recv-ble</string>
+    </array>
+
+    <!-- Start at login and whenever it exits (device disconnect, crash). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Don't hammer respawns if it exits immediately. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/aipassport-mic.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/aipassport-mic.log</string>
+</dict>
+</plist>

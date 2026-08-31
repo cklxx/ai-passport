@@ -374,12 +374,12 @@ def cmd_recv_ble(args):
             print(f"island: {action} (pip install pyautogui to inject)",
                   file=sys.stderr)
 
-    async def run():
-        print(f"island: scanning for {BLE_NAME} ...")
+    async def connect_once():
+        """One scan+connect+stream cycle. Returns when the link drops."""
         dev = await BleakScanner.find_device_by_name(BLE_NAME, timeout=15.0)
         if dev is None:
             print("island: device not found (is it advertising?)", file=sys.stderr)
-            return 1
+            return
         async with BleakClient(dev) as client:
             print(f"island: connected {dev.address}; streaming (Ctrl+C to stop)")
             await client.start_notify(BLE_UUID_AUDIO, on_audio)
@@ -401,6 +401,23 @@ def cmd_recv_ble(args):
                         pass
                 tick += 1
                 await asyncio.sleep(0.5)
+
+    async def run():
+        # Auto-reconnect forever: when the device sleeps, moves out of range, or
+        # macOS drops the link, scan and reconnect instead of exiting. Ctrl+C
+        # still stops cleanly (KeyboardInterrupt propagates out of asyncio.run).
+        print(f"island: scanning for {BLE_NAME} (auto-reconnect on) ...")
+        while True:
+            try:
+                await connect_once()
+            except Exception as e:
+                print(f"island: connection error: {e!r}", file=sys.stderr)
+            # clear stale audio so the next session starts clean
+            nonlocal w, r
+            with lock:
+                w = r = 0
+            await asyncio.sleep(2)
+            print("island: reconnecting ...", file=sys.stderr)
         return 0
 
     try:

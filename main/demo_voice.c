@@ -190,8 +190,11 @@ static void render(lv_timer_t *t)
         break;
     case ST_RECORDING: {
         char t2[40];
-        snprintf(t2, sizeof(t2), "%u.%us  tx=%u ok=%u",
-                 ms / 1000, ms % 1000 / 100, tx, ok);
+        // Show elapsed time; append a warning if the BLE link is dropping frames
+        // (congested). A healthy link shows just the timer.
+        bool healthy = (tx == 0 || ok * 100 >= tx * 95);
+        snprintf(t2, sizeof(t2), healthy ? "%u.%us" : "%u.%us  信号弱",
+                 ms / 1000, ms % 1000 / 100);
         lv_label_set_text(s_big, "● 录音中");
         lv_label_set_text(s_sub, t2);
         lv_label_set_text(s_hint, "确定 停止   下 发送   上 删除");
