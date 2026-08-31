@@ -29,6 +29,19 @@ run_static_checks() {
         -o "${test_dir}/test_ui_pixel_math"
     "${test_dir}/test_ui_pixel_math"
     python3 tests/test_verify_firmware.py
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_feishu_model.c main/feishu_model.c \
+        -o "${test_dir}/test_feishu_model"
+    "${test_dir}/test_feishu_model"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_island_quota.c main/island_quota.c \
+        -o "${test_dir}/test_island_quota"
+    "${test_dir}/test_island_quota"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_voice_proto.c main/voice_proto.c \
+        -o "${test_dir}/test_voice_proto"
+    "${test_dir}/test_voice_proto"
+    python3 -m unittest discover -s tests -p 'test_feishu_provision.py'
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }

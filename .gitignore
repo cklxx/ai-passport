@@ -1,6 +1,9 @@
 build/
+build-dev/
 sdkconfig
 sdkconfig.old
 managed_components/
 .vscode/
 .idea/
+__pycache__/
+*.pyc

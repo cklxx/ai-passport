@@ -6,11 +6,28 @@
 
 ## Unreleased
 
+- BLE 改传原始 16 kHz PCM，不再用 IMA-ADPCM：ADPCM 是有状态差分编码，BLE notify 丢一帧就会污染 predictor，之后整段音频全乱。原始 PCM 无状态——丢一帧只损失 10 ms——且 256 kbps 远低于 BLE 约 700 kbps 带宽。移除 ADPCM 编解码、主机测试和 Python 解码器。
+- 修复虚拟麦克风音频变成杂音/3 倍速：BlackHole 运行在 48 kHz，而流以 16 kHz 打开，任何读取它的应用（豆包、QuickTime）听到的都是加速噪声。`recv-ble` 现在按设备原生采样率打开并把 16 kHz 音频上采样对齐；同时写入每个输出声道（BlackHole 是双声道），避免读右声道/立体声的应用听到静音。
+- 放宽设备端 BLE 就绪判断为「已连接」而非「已连接且已订阅 CCCD」：macOS/CoreBluetooth 不总是上报 audio 订阅回调，导致设备连着却卡在「等待电脑」。未订阅时 notify 只是空操作，无害。
+- 开机直接进离线 BLE 语音主屏，不再先走联网飞书配网：无线麦克风的使用环境没有 Wi-Fi，原来强制先完成 Wi-Fi + 飞书绑定才能到语音，会永久卡死。飞书改为长按确定键按需进入。
+- 语音 BLE 外设改为「可连接但不可被发现」广播：原来通用可发现的 "AI-Passport-Mic" 会让附近 iPhone 弹出媒体外设提示并抢占唯一的从机连接，导致 Mac 音频流被打乱变成纯噪声。PC agent 用主动扫描仍按名字找得到；系统蓝牙面板不再列出它（设计如此）。
+- Claude 额度改走同一条 BLE 链路：控制特征现在接受写入，`island_agent.py recv-ble` 把 statusline 额度包写进去更新灵动岛，不再需要单独的 USB-serial/Wi-Fi 通路。每次录音 START 时重置设备端解码器，避免第二次之后的录音串味。
+- 新增 BLE 无线麦克风语音模式并设为主屏：设备广播 `AI-Passport-Mic`，采集 16 kHz 单声道音频，经 IMA-ADPCM 4:1 压缩后通过 NimBLE GATT notify 直连推流给已配对 PC。`tools/island_agent.py recv-ble` 将音频解码写入虚拟输入设备（BlackHole/VB-Cable），任何读取系统默认麦克风的转写应用（如豆包输入法）即可拿到音频；确定键开关录音，下键发送（Enter），上键删除（Backspace）。全程不依赖网络，无 Wi-Fi 环境也可用。
+- 新增 Claude 用量灵动岛：`tools/island_agent.py statusline` 把 Claude Code 合并后的 7 天限额转成设备可解析的 7 字节数据包（`main/island_quota.h`）；语音屏显示「Claude 7天剩余 X%」药丸（仅剩余百分比——设备无同步时钟，不编造倒计时）。
+- bit 级固件体积优化：`-Os` 配合静默断言、`LV_BUILD_EXAMPLES=n`，并关闭 26 个未用 LVGL 控件（保留 QRCODE 及其依赖 CANVAS、TJPGD、两个 Montserrat 字体）。移除 Wi-Fi/UDP 语音链路，改用 BLE。
+- 新增原生代码的主机测试：`tests/test_adpcm.c`（正弦往返误差与 4:1 压缩比）、`tests/test_voice_proto.c`（控制码帧格式）、`tests/test_island_quota.c`（数据包打包/解析），全部接入 `tools/validate.sh`；`island_agent.py selftest` 用 C 参考向量逐字节校验 Python 侧 ADPCM 解码器。
+- 简化首次手机设置：配网页现在可只保存 Wi-Fi，并直接响应 iOS 热点探测；用户自带飞书应用凭据仍在独立的第二步配置。
+- 扫码授权后若飞书应用未允许刷新令牌，设备会直接提示后台配置问题，不再反复生成无法完成长期绑定的二维码。
+- 发送和回复改用 tenant token，以应用机器人身份发出；用户应用不再申请不可用的 `im:message.send_as_user` 权限。
+- 将发布者内置飞书凭据改为高级用户自带应用：通用 Web Serial 固件不包含私人应用，同一网页可通过 USB 在本地写入用户自己的 App ID/Secret，随后由设备获取并保存自己的用户授权。
 - 将小程序 BLE 安装兼容提升为二创模板强制契约：固定保护 `cardid`/Recovery 分区，
   保留上键持续 5 秒进入 Recovery 的 bootloader hook，并在 CI 强制校验合并镜像结构、
   分区表 MD5/范围、3 MB 应用上限和保护分区数据不入包。
 - 规定多应用发布的 Release 标题约定：tag 按 `v<版本>-<应用名>`（如 `v0.1.0-voice-keychain`）命名，让 Release 标题同时带版本与应用名；发布成功后核对标题，保证一眼扫 Release 列表就能区分是哪个应用。
 - 新增发布后收尾流程：`issue-suggestions` skill 用于把用户反馈作为 issue 提交到上游项目；`experience-pr` skill 用于把可复用的开发经验作为文档 PR 提交；新增 `docs/experiences/` 目录保存单条经验文件；并配套 `project-completion`、`file-issues` 与经验索引文档。
+- 修复飞书 device-code 轮询使用错误 token 地址的问题；未扫码时继续等待，临时网络错误自动重试，二维码过期后自动刷新。
+- 将 LVGL 的有限 CJK 子集替换为驻留 Flash 的 1-bit Source Han Sans 设备字库，覆盖 U+4E00-U+9FFF 和中文标点，解决首启引导及飞书动态消息里的缺字方块。
+- 新增设备直连飞书消息 MVP：支持加密 BLUFI 配网、会话未读标识、最近消息浏览、回复指定消息、飞书原生流式 ASR、检查/重录/取消，以及按键二次确认发送。
 - 精简仓库根目录：将 GitHub 可识别的社区治理文档迁入 `.github/`，将变更记录迁入 `docs/`，同步全部引用，并在仓库检查中加入根目录文档白名单。
 - 全仓库文档语言规范：所有维护中的 Markdown 默认 `.md` 文件使用英文，简体中文使用配对的 `.zh_CN.md`，双方提供语言切换；静态检查会阻止缺失配对、缺失切换链接或英文默认页混入中文正文。
 - AI 开发流程一期：精简按任务加载的上下文入口，统一本地/CI 验证脚本，新增 PR 自动构建与模板，并提交依赖锁文件以提高构建可复现性。

@@ -8,4 +8,8 @@ This directory holds application-, component-, and system-level designs: module 
 
 Use one descriptive file or subdirectory per topic. State scope and applicable version or commit. Reference stable hardware documents instead of copying pin or board facts.
 
-No topic-specific software design is registered yet. The authoritative AI entry point is [AGENTS.md](../../AGENTS.md); collaboration rules are under `docs/contribution/`, engineering rules under `docs/development/`, and fork workflow in `docs/fork-guide.md`.
+Registered designs:
+
+- [feishu-messenger.md](feishu-messenger.md): direct-device Feishu conversations, messages, voice transcription, reply confirmation, provisioning, persistence, and runtime boundaries.
+
+The authoritative AI entry point is [AGENTS.md](../../AGENTS.md); collaboration rules are under `docs/contribution/`, engineering rules under `docs/development/`, and fork workflow in `docs/fork-guide.md`.

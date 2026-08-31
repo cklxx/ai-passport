@@ -18,6 +18,8 @@
 | [development/README.zh_CN.md](./development/README.zh_CN.md) | 工程规范索引 | authoritative | 通用工程开发规范（构建验证、代码约定） |
 | [development/environment-setup.zh_CN.md](./development/environment-setup.zh_CN.md) | 工程规范 | authoritative | AI 全新机器环境引导、国际与中国大陆下载线路 |
 | [development/build-and-test.zh_CN.md](./development/build-and-test.zh_CN.md) | 工程规范 | authoritative | 构建与验证（ESP-IDF 命令、逻辑测试、改动验证要求） |
+| [development/feishu-owner-provisioning.zh_CN.md](./development/feishu-owner-provisioning.zh_CN.md) | 工程规范 | authoritative | 用户自带飞书应用的 Web Serial 与 USB 配置流程 |
+| [development/feishu-handoff.zh_CN.md](./development/feishu-handoff.zh_CN.md) | 接手记录 | 参考 | 当前飞书消息应用实现、故障证据与安全接手步骤 |
 | [development/ble-recovery-compatibility.zh_CN.md](./development/ble-recovery-compatibility.zh_CN.md) | 工程规范 | authoritative | 小程序 BLE 固件产物、分区与 bootloader 兼容契约 |
 | [development/coding-conventions.zh_CN.md](./development/coding-conventions.zh_CN.md) | 工程规范 | authoritative | 代码约定（语言风格、复用、注释、测试同步、资源约束） |
 | [development/agent-guide.zh_CN.md](./development/agent-guide.zh_CN.md) | 工程规范 | authoritative | AI 开发工作流（上下文建立、需求拆解、BSP 边界、验收交付格式） |
@@ -30,6 +32,7 @@
 | [development/experience-notes.zh_CN.md](./development/experience-notes.zh_CN.md) | 沉淀记录 | 参考 | `docs/experiences/` 下开发经验条目的索引 |
 | [fork-guide.zh_CN.md](./fork-guide.zh_CN.md) | fork 工作流 | authoritative | 目录结构、main 保持干净、fork 约定、docs/assets 使用 |
 | [software-design/README.zh_CN.md](./software-design/README.zh_CN.md) | 软件设计索引 | 参考 | 软件设计文档子目录骨架 |
+| [software-design/feishu-messenger.zh_CN.md](./software-design/feishu-messenger.zh_CN.md) | 飞书消息设计 | authoritative | 设备直连飞书的交互、配网与运行时边界 |
 | [hardware-design/README.zh_CN.md](./hardware-design/README.zh_CN.md) | 硬件设计索引 | 参考 | 硬件设计文档子目录骨架 |
 | [hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.zh_CN.md](./hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.zh_CN.md) | 硬件指南 | authoritative | 完整硬件开发指南与排障参考（上游） |
 | [hardware-design/specifications.zh_CN.md](./hardware-design/specifications.zh_CN.md) | 产品规格 | authoritative | 产品规格（尺寸、重量、电池、充电、NFC、按键等对外口径） |

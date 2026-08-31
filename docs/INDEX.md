@@ -18,6 +18,8 @@ Use this page to discover repository documentation. `authoritative` documents de
 | [development/agent-guide.md](development/agent-guide.md) | AI-assisted development workflow | authoritative |
 | [development/environment-setup.md](development/environment-setup.md) | Clean-machine environment bootstrap for AI agents | authoritative |
 | [development/build-and-test.md](development/build-and-test.md) | Build and validation commands | authoritative |
+| [development/feishu-owner-provisioning.md](development/feishu-owner-provisioning.md) | Web Serial and USB setup for an owner-provided Feishu application | authoritative |
+| [development/feishu-handoff.md](development/feishu-handoff.md) | Current Feishu messenger implementation and debugging handoff | reference |
 | [development/ble-recovery-compatibility.md](development/ble-recovery-compatibility.md) | Mini-program BLE firmware compatibility contract | authoritative |
 | [development/coding-conventions.md](development/coding-conventions.md) | C and firmware conventions | authoritative |
 | [development/CI-validation.md](development/CI-validation.md) | Pull-request and main-branch validation | authoritative |
@@ -33,5 +35,6 @@ Use this page to discover repository documentation. `authoritative` documents de
 | [hardware-design/specifications.md](hardware-design/specifications.md) | User-facing product specifications | authoritative |
 | [software-design/README.md](software-design/README.md) | Software-design document index | reference |
 | [../plays/INDEX.md](../plays/INDEX.md) | Index of archived applications in `plays/` | reference |
+| [software-design/feishu-messenger.md](software-design/feishu-messenger.md) | Direct-device Feishu messenger design and provisioning contract | authoritative |
 
 GitHub community documents: [CONTRIBUTING.md](../.github/CONTRIBUTING.md), [CODE_OF_CONDUCT.md](../.github/CODE_OF_CONDUCT.md), [SECURITY.md](../.github/SECURITY.md), and [SUPPORT.md](../.github/SUPPORT.md).

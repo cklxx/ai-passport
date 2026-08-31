@@ -1,0 +1,5 @@
+menu "FoloToy product configuration"
+
+comment "Feishu app credentials are owner-provisioned over USB and are never built into firmware."
+
+endmenu

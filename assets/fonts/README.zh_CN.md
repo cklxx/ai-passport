@@ -14,4 +14,14 @@
 
 ## 目录说明
 
-> 当前为空骨架，用于存放后续加入的字库资源。加入资源时请同步更新本 `README.md` 的索引。
+## 设备内置字库
+
+`main/lv_font_ai_passport_14.c` 由 Source Han Sans SC Normal 2.005 生成，
+采用 14 px、1-bit 压缩字模，覆盖 ASCII、常用中文标点、全角字符以及完整的
+U+4E00-U+9FFF 中日韩统一表意文字区。源字库使用 SIL OFL 1.1 许可，许可全文
+保存在 `SourceHanSans-OFL.txt`。
+
+重新生成时使用 `lv_font_conv` 1.5.3，字符范围为
+`0x20-0x7e,0x2000-0x206f,0x2713,0x3000-0x303f,0x4e00-0x9fff,0xff00-0xffef`，
+选择 1 bpp、保留压缩并关闭 kerning。生成后将产品界面的行高和基线分别保持为
+17 px 与 4 px。

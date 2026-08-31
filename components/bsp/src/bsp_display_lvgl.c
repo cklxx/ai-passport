@@ -16,7 +16,11 @@ lv_display_t *bsp_lvgl_init(void) {
         return NULL;
     }
 
-    const lvgl_port_cfg_t pc = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_port_cfg_t pc = ESP_LVGL_PORT_INIT_CONFIG();
+    // TJPGD keeps a 4 KiB work pool on the LVGL task stack while probing and
+    // decoding JPEG files. The port default (7168) overflows on real Feishu
+    // images, so reserve enough headroom for the decoder and filesystem calls.
+    pc.task_stack = 12288;
     if (lvgl_port_init(&pc) != ESP_OK) {
         ESP_LOGE(TAG, "lvgl_port_init 失败");
         return NULL;
