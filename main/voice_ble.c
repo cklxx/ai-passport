@@ -338,6 +338,21 @@ bool voice_ble_send_audio(const uint8_t *data, size_t len, uint16_t seq)
     return rc == 0;
 }
 
+bool voice_ble_send_ctrl_buf(const uint8_t *data, size_t len)
+{
+    if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE || data == NULL) return false;
+    // Same retry discipline as the one-byte codes: the pool is shared with the audio
+    // stream and a stats frame is worth one attempt per connection event, not a spin.
+    struct os_mbuf *om = NULL;
+    for (int i = 0; i < 10; i++) {
+        om = ble_hs_mbuf_from_flat(data, len);
+        if (om != NULL) break;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    if (om == NULL) return false;
+    return ble_gatts_notify_custom(s_conn, s_ctrl_val_handle, om) == 0;
+}
+
 bool voice_ble_send_ctrl(uint8_t code)
 {
     if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE) return false;

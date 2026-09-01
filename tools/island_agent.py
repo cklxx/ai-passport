@@ -611,7 +611,19 @@ def cmd_recv_ble(args):
     def on_ctrl(_char, data):
         if not data:
             return
-        code = data[0]
+        raw = bytes(data)
+        code = raw[0]
+        if code == 6 and len(raw) >= 11:      # VOICE_CTRL_STATS
+            ovf, first_ms, read_ms, send_ms, retry_ms = struct.unpack(
+                "<5H", raw[1:11])
+            # Printed next to the host-side figures because that pairing is what
+            # separates "the device never produced the frames" from "they arrived
+            # late". retry dominating means the sender is waiting on the BLE pool;
+            # ovf means capture is being dropped before it is ever sent.
+            print(f"island: device read={read_ms}ms send={send_ms}ms "
+                  f"retry={retry_ms}ms first_frame={first_ms}ms i2s_ovf={ovf}",
+                  file=sys.stderr)
+            return
         if code == 3:                     # VOICE_CTRL_START
             sessions[0] += 1              # invalidate any drain still sleeping
             hold_key(False)               # a pending drain must not outlive this

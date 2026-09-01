@@ -42,7 +42,11 @@ static esp_err_t i2s_full_duplex_init(void) {
     i2s_chan_config_t chan = {
         .id = BSP_I2S_PORT,
         .role = I2S_ROLE_MASTER,
-        .dma_desc_num = 6,
+        .dma_desc_num = 10,             // 10 x 240 samples = 150 ms of slack. 20 was
+                                        // tried and broke the device outright — no
+                                        // key events reached the dispatcher — since
+                                        // these buffers come from internal RAM and
+                                        // tripling them starved the init path.
         .dma_frame_num = 240,
         .auto_clear_after_cb = true,
         .auto_clear_before_cb = false,

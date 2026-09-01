@@ -45,6 +45,10 @@ void voice_ble_log_audio_stats(void);
 // Notify a control code to the PC (1=send, 2=delete). Non-blocking.
 bool voice_ble_send_ctrl(uint8_t code);
 
+// Send an arbitrary control-channel payload (the stats frame). Same characteristic
+// as the one-byte codes; the first byte identifies which.
+bool voice_ble_send_ctrl_buf(const uint8_t *data, size_t len);
+
 // Register a sink for quota packets the PC writes to the control characteristic
 // (7-byte island_quota wire format). Called from the BLE host task — the sink
 // must be cheap and thread-safe. Pass NULL to clear.

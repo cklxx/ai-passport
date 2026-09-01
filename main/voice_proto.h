@@ -14,6 +14,11 @@
 //   audio: [0x56 'V'][0x00 type][seq_lo][seq_hi][PCM int16 little-endian...]
 //   ctrl:  [0x56 'V'][code]            code in {1 send, 2 delete, 3 start,
 //                                                4 stop, 5 delete-all}
+//   stats: [6][ovf u16][first_frame_ms u16][read_ms u16][send_ms u16][retry_ms u16]
+//          Sent once after STOP so the PC can report where the device's loop time
+//          went without a USB cable attached. Diagnosing a rate shortfall needs
+//          these numbers, and needing a cable to read them means they are unavailable
+//          exactly when the device is being used normally.
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -33,6 +38,7 @@ typedef enum {
     VOICE_CTRL_START = 3,   // mic stream opening
     VOICE_CTRL_STOP = 4,    // mic stream closing
     VOICE_CTRL_DELETE_ALL = 5,  // PC clears the whole line (select-all + delete)
+    VOICE_CTRL_STATS = 6,       // device -> PC, followed by a stats payload
 } voice_ctrl_t;
 
 // Write the 4-byte audio header into buf (>= VOICE_AUDIO_HEADER_LEN). PCM bytes

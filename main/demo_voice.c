@@ -202,6 +202,26 @@ static void worker_task(void *arg)
                      s_elapsed_ms ? ovf * 100 /
                      (s_elapsed_ms / (VOICE_CHUNK_SAMPLES * 1000 / VOICE_SAMPLE_RATE)) : 0);
             if (ready) voice_ble_send_ctrl(VOICE_CTRL_STOP);
+            if (ready) {
+                // Where the loop's time went, little-endian, milliseconds. The PC
+                // prints it with its own figures, which is the only way to tell a
+                // device-side shortfall from a delivery one — and needing USB serial
+                // to read it meant it was unavailable exactly when the device was in
+                // real use.
+                uint16_t st16[5] = {
+                    (uint16_t)(ovf > 0xFFFF ? 0xFFFF : ovf),
+                    (uint16_t)(s_first_frame_us / 1000),
+                    (uint16_t)(s_read_us / 1000),
+                    (uint16_t)(s_send_us / 1000),
+                    (uint16_t)(s_retry_us / 1000),
+                };
+                uint8_t buf[1 + sizeof(st16)];
+                buf[0] = VOICE_CTRL_STATS;
+                memcpy(buf + 1, st16, sizeof(st16));
+                if (!voice_ble_send_ctrl_buf(buf, sizeof(buf))) {
+                    ESP_LOGW(TAG, "stats frame not sent");
+                }
+            }
             set_state(ready ? ST_IDLE : ST_CONNECTING);
         } else if (!capturing) {
             set_state(ready ? ST_IDLE : ST_CONNECTING);
