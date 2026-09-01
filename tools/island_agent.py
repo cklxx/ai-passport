@@ -40,6 +40,30 @@ ISLAND_LEN_V1 = 7
 UNKNOWN = 0xFF
 DEFAULT_EMIT = os.path.expanduser("~/.claude/island_quota.bin")
 
+# Device audio frame: 480 mu-law bytes, 30 ms at 16 kHz. Kept here rather than
+# inside cmd_recv_ble so selftest can assert it against the device's own figure.
+# See VOICE_CHUNK_SAMPLES in main/demo_voice.c for why the frame is this long: BLE
+# passes a roughly fixed number of notifications per connection event, so the
+# frame RATE is the binding constraint and mu-law halves it at an identical
+# 482-byte packet size.
+DEV_FRAME = 480
+
+
+def _ulaw_table():
+    """256-entry int16 lookup, the exact inverse of voice_ulaw_encode in C.
+
+    A table, not arithmetic: decoding is per-sample on the audio callback's
+    thread, and 256 entries turn it into one numpy gather.
+    """
+    import numpy as np
+    out = np.empty(256, dtype="<i2")
+    for c in range(256):
+        u = (~c) & 0xFF
+        t = ((u & 0x0F) << 3) + 0x84
+        t <<= (u & 0x70) >> 4
+        out[c] = (0x84 - t) if (u & 0x80) else (t - 0x84)
+    return out
+
 
 def codex_used_percentage():
     """Codex's 7-day used %, read from its newest session log, or None.
@@ -411,7 +435,7 @@ def cmd_recv_ble(args):
     #   underrun holds the last sample (no click, no silence burst) instead of 0
     #   MAXBUF  caps added latency; only sustained clock drift ever trims here
     import collections
-    q = collections.deque()               # 160-sample (10 ms) 16 kHz frames
+    q = collections.deque()               # decoded 16-bit frames, DEV_FRAME samples each
     primed = [False]
     qlen = [0]                            # samples queued (deque holds frames)
     last = [0]
@@ -435,8 +459,9 @@ def cmd_recv_ble(args):
     # Device frame size, and the output block that carries exactly one of them. Kept
     # as one constant: it appears in the block size and the resample index map, and a
     # mismatch between those silently distorts the audio rather than failing.
-    FRAME = 240                           # see VOICE_CHUNK_SAMPLES in demo_voice.c
-    BLOCK = FRAME * UP                    # 15 ms out = one source frame
+    FRAME = DEV_FRAME                     # see VOICE_CHUNK_SAMPLES in demo_voice.c
+    BLOCK = FRAME * UP                    # 30 ms out = one source frame
+    ULAW = _ulaw_table()
     # 150 ms. This used to be the only defence against starvation, so it had been
     # pushed to 350 ms — which cost 200 ms of response time and did not even work
     # (see the elastic-consumption note in cb(): PREBUF is just the walk's initial
@@ -567,7 +592,10 @@ def cmd_recv_ble(args):
         # frame is indistinguishable from the device running slow — which is exactly
         # the ambiguity that sent several rounds of debugging to the wrong layer.
         seq = raw[0] | (raw[1] << 8)
-        pcm = np.frombuffer(raw, dtype="<i2", offset=2)
+        # One byte per sample, decoded through the mu-law table (see _ulaw_table
+        # and voice_ulaw_encode in main/voice_proto.c — the two are checked against
+        # the same reference vectors by selftest and test_voice_proto.c).
+        pcm = ULAW[np.frombuffer(raw, dtype=np.uint8, offset=2)]
         prev = stats["seq"]
         if prev is not None:
             gap = (seq - prev - 1) & 0xFFFF
@@ -739,7 +767,7 @@ def cmd_recv_ble(args):
                       f"prebuf={prebuf[0] * 1000 // SRC_RATE}ms "
                       f"| lost={stats['lost']}f in {stats['bursts']} gaps "
                       f"(worst {stats['worst']}f) "
-                      f"{stats['lost']*100.0/max(1, stats['lost'] + stats['in']//240):.1f}%",
+                      f"{stats['lost']*100.0/max(1, stats['lost'] + stats['in']//FRAME):.1f}%",
                       file=sys.stderr)
             threading.Thread(target=drain, daemon=True).start()
             return
@@ -917,6 +945,29 @@ def cmd_selftest(_args):
     assert _seven_day({"seven_day": {}}) == (None, None)
     assert _seven_day({}) == (None, None)
     assert _seven_day(None) == (None, None)
+
+    # mu-law: the same reference vectors tests/test_voice_proto.c asserts against
+    # the C encoder. The two implementations are on opposite ends of the wire, so a
+    # change made to one and not the other lands as distorted audio rather than a
+    # failure — unless it fails here.
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        print("island_agent selftest: PASS (numpy absent, mu-law check skipped)")
+        return 0
+    table = _ulaw_table()
+    codes = [0xFF, 0xFF, 0x7F, 0xF2, 0x72, 0xCE, 0x4E,
+             0xA0, 0x20, 0x80, 0x00, 0xFF, 0x7F, 0xE7, 0x67]
+    samples = [0, 1, -1, 100, -100, 1000, -1000,
+               8000, -8000, 32767, -32768, 3, -3, 255, -256]
+    for s, c in zip(samples, codes):
+        got = table[c]
+        # Decoding is lossy by design, so assert the sample lands inside the
+        # segment it encoded from rather than round-tripping exactly.
+        assert abs(int(got) - s) <= abs(s) // 16 + 64, (s, c, int(got))
+    assert table[0xFF] == 0                       # silence stays silent
+    assert table[0x80] > 0 and table[0x00] < 0    # sign survives
+    assert len(set(table.tolist())) == 255        # +0 and -0 collide; nothing else
     print("island_agent selftest: PASS")
     return 0
 

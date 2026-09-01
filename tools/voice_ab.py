@@ -83,7 +83,7 @@ import numpy as np
 
 FS_FULL = 32768.0          # int16 full scale
 SR = 16000
-DEV_FRAME = 240            # samples per BLE frame == the device's capture block
+DEV_FRAME = 480            # samples per BLE frame == the device's capture block
 ABS_GATE_DBFS = -40.0      # fixed speech gate; see trap 1 above
 ADAPT_GATE_DB = 12.0       # dB above the measured floor, for structure only
 SPEC_WIN = 1024            # 64 ms → 15.6 Hz bins, fine enough for an 80 Hz edge
@@ -283,7 +283,7 @@ def splice_score(x, frame=DEV_FRAME):
     A dropped BLE notify is simply absent from the dump: the next frame is
     concatenated onto the previous one and the file gets shorter, with no marker.
     But splicing two unrelated waveform positions leaves a step exactly at a
-    240-sample boundary. Comparing the median jump at boundaries to the median
+    DEV_FRAME boundary. Comparing the median jump at boundaries to the median
     jump everywhere else detects that from the file alone. ~1.0 means clean;
     well above 1 means frames are missing.
     """

@@ -2,8 +2,10 @@
 //
 // The device has no Wi-Fi in its use environment, so audio streams over a BLE
 // GATT service (voice_ble.c) direct to a paired PC running the recv-ble agent.
-// 16 kHz raw PCM is sent frame by frame — stateless, so a dropped BLE notify
-// costs only that frame instead of corrupting the stream (ADPCM would drift).
+// 16 kHz mu-law is sent frame by frame — stateless per sample, so a dropped BLE
+// notify costs only that frame instead of corrupting the stream (ADPCM would
+// drift), while one byte per sample halves the frames per second the link must
+// carry. See VOICE_CHUNK_SAMPLES for why the frame RATE is the binding limit.
 //
 //   OK   = start / stop the mic
 //   DOWN = 发送  (control -> PC injects Enter)
@@ -33,13 +35,25 @@
 static const char *TAG = "demo_voice";
 
 #define VOICE_SAMPLE_RATE 16000
-// BLE lets roughly one notify through per connection event, so the frame size —
-// not the capture rate — bounds how much audio the link can carry, and a
-// shortfall is a hole in the PC's mic stream that a streaming ASR reads as a
-// sentence end. macOS settles near a 15 ms interval: 10 ms frames starved the
-// link to 68% of realtime; 240 samples (15 ms, 480 B — the largest whole PCM
-// frame inside ATT MTU 512) measures at ~100%.
-#define VOICE_CHUNK_SAMPLES 240
+// BLE lets roughly one notify through per connection event, so the NUMBER of
+// frames per second — not their size, and not bandwidth — is what the link
+// bounds, and a shortfall is a hole in the PC's mic stream that a streaming ASR
+// reads as a sentence end.
+//
+// 480 samples of mu-law is 480 bytes, the same 482-byte packet that 240 samples
+// of 16-bit PCM produced, at half the frame rate: 33.3/s instead of 66.7/s. The
+// PCM form measured 85-92% delivered when macOS granted a 15 ms connection
+// interval and fell to 47-56% — almost exactly half — after a reconnect
+// renegotiated it to 30 ms, with the device's own pool_dry counter going from
+// ~19 to ~235 per session as unsent notifications filled the mbuf pool. The
+// device cannot make macOS grant more events, so it sends fewer, larger-payload
+// frames instead. See voice_ulaw_encode for what the compression costs.
+//
+// Do not raise this to fill the MTU further: 252 samples (506 of 507 available
+// bytes) was tried and measured WORSE, 89% -> 69%, because a fuller packet costs
+// more of the controller's ACL buffers. Headroom is worth more than the slots.
+#define VOICE_CHUNK_SAMPLES 480
+#define VOICE_CHUNK_MS (VOICE_CHUNK_SAMPLES * 1000 / VOICE_SAMPLE_RATE)   // 30 ms
 
 // ST_CONNECTING here means "advertising / waiting for the PC to subscribe".
 typedef enum { ST_CONNECTING, ST_IDLE, ST_RECORDING, ST_ERROR } voice_state_t;
@@ -76,7 +90,15 @@ static volatile unsigned s_elapsed_ms;
 static volatile int s_level;
 static unsigned s_lvl_tick;              // worker-only: frames since the last RMS
 #define VOICE_SILENCE_LEVEL 10           // below this the smoothed level reads quiet
-#define VOICE_SILENCE_TICKS 50           // 50 * 60 ms = 3.0 s of quiet ends a take
+// The RMS runs every other frame, so the counters below tick in 60 ms units
+// regardless of the frame length. Pinning the UNIT rather than the frame count is
+// what keeps the silence timeout at 3 s when the frame size changes.
+#define VOICE_LVL_EVERY 2                            // 2 * 30 ms = 60 ms
+#define VOICE_SILENCE_TICKS 50                       // 50 * 60 ms = 3.0 s ends a take
+// One in eight samples, i.e. 60 per frame — the count the meter was tuned against.
+// This runs between the capture read and the notify, so it is charged straight to
+// the frame budget: sampling every sample once measurably cut delivery 99% -> 95%.
+#define VOICE_LVL_STRIDE 8
 static bool s_backlog;                   // worker-only: one frame awaiting a retry
 static unsigned s_quiet_ticks;           // worker-only: consecutive quiet RMS ticks
 static int32_t s_hp_x, s_hp_y;           // worker-only: high-pass filter state
@@ -130,7 +152,11 @@ static void worker_task(void *arg)
 {
     (void)arg;
     static int16_t pcm[VOICE_CHUNK_SAMPLES];
-    static int16_t backlog[VOICE_CHUNK_SAMPLES];   // one frame awaiting one retry
+    // Encoded frame, and the one frame held for a single retry. Both are mu-law
+    // bytes, not samples: keeping the retry copy in encoded form means the retry
+    // sends the identical bytes and re-encodes nothing.
+    static uint8_t enc[VOICE_CHUNK_SAMPLES];
+    static uint8_t backlog[VOICE_CHUNK_SAMPLES];
     uint16_t backlog_seq = 0;                      // valid only while s_backlog
     s_backlog = false;
     bool capturing = false;
@@ -191,8 +217,7 @@ static void worker_task(void *arg)
             voice_ble_log_audio_stats();
             ESP_LOGI(TAG, "recording STOP %u.%us i2s_ovf=%u (%u%% of frames)",
                      s_elapsed_ms / 1000, s_elapsed_ms % 1000 / 100, ovf,
-                     s_elapsed_ms ? ovf * 100 /
-                     (s_elapsed_ms / (VOICE_CHUNK_SAMPLES * 1000 / VOICE_SAMPLE_RATE)) : 0);
+                     s_elapsed_ms ? ovf * 100 / (s_elapsed_ms / VOICE_CHUNK_MS) : 0);
             if (ready) voice_ble_send_ctrl(VOICE_CTRL_STOP);
             if (ready) {
                 // Where the loop's time went, little-endian, milliseconds. The PC
@@ -243,8 +268,7 @@ static void worker_task(void *arg)
         // which is the common case — and discard it if the second attempt fails
         // rather than waiting. Leaving headroom beats filling every slot.
         if (s_backlog) {
-            (void)voice_ble_send_audio((const uint8_t *)backlog, sizeof(backlog),
-                                       backlog_seq);
+            (void)voice_ble_send_audio(backlog, sizeof(backlog), backlog_seq);
             s_backlog = false;          // sent or not, this frame's turn is over
         }
         int64_t t0 = esp_timer_get_time();
@@ -254,9 +278,11 @@ static void worker_task(void *arg)
             continue;
         }
         s_read_us += esp_timer_get_time() - t0;
-        s_elapsed_ms += VOICE_CHUNK_SAMPLES * 1000 / VOICE_SAMPLE_RATE;
-        // Send raw 16-bit PCM: stateless, so a dropped BLE notify costs only that
-        // frame instead of corrupting the whole stream (ADPCM would drift).
+        s_elapsed_ms += VOICE_CHUNK_MS;
+        // Send mu-law, not raw PCM: still stateless per sample, so a dropped BLE
+        // notify costs only that frame instead of corrupting the stream (ADPCM
+        // would drift), but at one byte per sample instead of two — which is what
+        // halves the frame rate the link has to carry.
         // High-pass the frame in place, one pole at about 90 Hz. The measured
         // spectrum had 11.5% of its energy below 80 Hz and only 36% in the
         // 300-3400 Hz speech band: handling noise and body rumble that carry no
@@ -285,24 +311,25 @@ static void worker_task(void *arg)
         // charged directly against the frame budget. Doing it per frame over every
         // sample measurably cut the delivered rate (99% -> 95%). 60 ms updates and
         // 60 samples are ample for a 12-cell bar behind a 100 ms render tick.
-        if (++s_lvl_tick >= 4) {
+        if (++s_lvl_tick >= VOICE_LVL_EVERY) {
             s_lvl_tick = 0;
             uint32_t acc = 0;
-            for (int i = 0; i < VOICE_CHUNK_SAMPLES; i += 4) {
+            for (int i = 0; i < VOICE_CHUNK_SAMPLES; i += VOICE_LVL_STRIDE) {
                 int32_t v = pcm[i] >> 4;      // keep the accumulator in 32 bits
                 acc += (uint32_t)(v * v);
             }
-            int lvl = (int)(isqrt64(acc / (VOICE_CHUNK_SAMPLES / 4)) * 16 / 40);
+            int lvl = (int)(isqrt64(acc / (VOICE_CHUNK_SAMPLES / VOICE_LVL_STRIDE)) * 16 / 40);
             if (lvl > 100) lvl = 100;
             int prev = s_level;
             s_level = lvl > prev ? lvl : prev - (prev - lvl) / 2;
 
             // Auto-stop on sustained silence, so a take ends by itself when the
-            // user stops talking. The level is computed every 4th frame (60 ms), so
-            // the counter ticks in 60 ms units. 3 s of quiet: past a pause for
-            // thought, short enough not to feel like a hang. Earlier values of
-            // 2.4 s clipped people mid-sentence. DOWN stops immediately, and any
-            // speech resets the count.
+            // user stops talking. The level is computed every VOICE_LVL_EVERY
+            // frames, which is fixed at 60 ms, so the counter ticks in 60 ms units
+            // whatever the frame length. 3 s of quiet: past a pause for thought,
+            // short enough not to feel like a hang. Earlier values of 2.4 s clipped
+            // people mid-sentence. DOWN stops immediately, and any speech resets
+            // the count.
             if (lvl < VOICE_SILENCE_LEVEL) {
                 if (++s_quiet_ticks >= VOICE_SILENCE_TICKS) s_want_record = false;
             } else {
@@ -311,14 +338,19 @@ static void worker_task(void *arg)
         }
 
         uint16_t seq = voice_ble_next_audio_seq();
+        // Encode after the high-pass and the RMS, so both still see linear samples:
+        // the filter needs true arithmetic and the meter's thresholds were tuned on
+        // PCM. mu-law is per-sample, so this is a flat 480-iteration pass with no
+        // state carried between frames.
+        for (int i = 0; i < VOICE_CHUNK_SAMPLES; i++) enc[i] = voice_ulaw_encode(pcm[i]);
         t0 = esp_timer_get_time();
-        bool ok = voice_ble_send_audio((const uint8_t *)pcm, sizeof(pcm), seq);
+        bool ok = voice_ble_send_audio(enc, sizeof(enc), seq);
         if (ok && s_first_frame_us == 0) {
             s_first_frame_us = esp_timer_get_time() - s_record_start_us;
         }
         s_send_us += esp_timer_get_time() - t0;
         if (!ok) {
-            memcpy(backlog, pcm, sizeof(pcm));
+            memcpy(backlog, enc, sizeof(enc));
             backlog_seq = seq;
             s_backlog = true;           // one retry at the top of the next pass
         }

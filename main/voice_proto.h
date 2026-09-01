@@ -49,3 +49,21 @@ size_t voice_pack_audio_header(uint8_t *buf, size_t cap, uint16_t seq);
 size_t voice_pack_ctrl(uint8_t *buf, size_t cap, voice_ctrl_t code);
 
 bool voice_ctrl_valid(int code);
+
+// G.711 mu-law: one 16-bit sample to one byte, logarithmic. Stateless per sample,
+// so a lost frame costs exactly that frame (ADPCM was rejected early for drifting
+// after a loss, and this keeps that property while halving the byte rate).
+//
+// Why the byte rate matters: BLE passes roughly a fixed number of notifications
+// per connection event regardless of their size, so the frame RATE is the binding
+// constraint, not bandwidth. At 240 16-bit samples the device needed 66.7
+// notifications/s and measured 50% delivery against a link draining ~34/s. The
+// same 482-byte packet holds 480 mu-law samples, which halves the requirement to
+// 33.3/s at an identical packet size. Bandwidth was never the limit — the early
+// "256 kbps fits in 700 kbps" calculation asked the wrong question.
+//
+// Costs 34-38 dB SNR across a 30 dB dynamic range (measured, sine sweep) versus
+// 16-bit PCM's ~96 dB. The full 16 kHz bandwidth is kept, so fricative and
+// affricate discrimination — what Mandarin ASR needs most — is untouched.
+uint8_t voice_ulaw_encode(int16_t sample);
+int16_t voice_ulaw_decode(uint8_t code);
