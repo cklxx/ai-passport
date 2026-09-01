@@ -32,6 +32,16 @@
     <key>ThrottleInterval</key>
     <integer>10</integer>
 
+    <!-- Keep it out of the Dock. pyautogui links AppKit to synthesize the
+         push-to-talk keypress, which promotes the process to a GUI application
+         and makes its icon bounce in the Dock on every launch and relaunch.
+         LSUIElement demotes it back to an accessory: no Dock tile, no menu bar
+         item, keystroke synthesis still works. -->
+    <key>LSUIElement</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
     <key>StandardOutPath</key>
     <string>/tmp/aipassport-mic.log</string>
     <key>StandardErrorPath</key>

@@ -1,10 +1,14 @@
 #include "voice_ble.h"
 
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "host/ble_att.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
+#include "os/os_mbuf.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
@@ -27,6 +31,13 @@ static uint16_t s_ctrl_val_handle;
 static volatile bool s_audio_subscribed;
 static volatile bool s_running;
 static voice_ble_quota_cb_t s_quota_cb;
+static uint16_t s_audio_seq;
+static uint16_t s_audio_mtu;
+static uint16_t s_audio_msys_min;
+static unsigned s_audio_attempts, s_audio_accepted;
+static unsigned s_audio_alloc_fail, s_audio_append_fail, s_audio_oversize;
+static unsigned s_audio_notify_fail;
+static int s_audio_last_rc;
 
 void voice_ble_set_quota_cb(voice_ble_quota_cb_t cb)
 {
@@ -112,6 +123,20 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "mtu=%d", event->mtu.value);
         break;
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+        struct ble_gap_conn_desc desc;
+        if (event->conn_update.status == 0 &&
+            ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
+            unsigned interval_x100_ms = desc.conn_itvl * 125;
+            ESP_LOGI(TAG, "conn interval=%u (%u.%02ums) latency=%u",
+                     desc.conn_itvl, interval_x100_ms / 100,
+                     interval_x100_ms % 100,
+                     desc.conn_latency);
+        } else {
+            ESP_LOGW(TAG, "conn update failed rc=%d", event->conn_update.status);
+        }
+        break;
+    }
     default:
         break;
     }
@@ -197,18 +222,85 @@ bool voice_ble_ready(void)
     return s_running && s_conn != BLE_HS_CONN_HANDLE_NONE;
 }
 
-bool voice_ble_send_audio(const uint8_t *data, size_t len)
+void voice_ble_reset_audio_seq(void)
+{
+    s_audio_seq = 0;
+}
+
+uint16_t voice_ble_next_audio_seq(void)
+{
+    return s_audio_seq++;
+}
+
+void voice_ble_reset_audio_stats(void)
+{
+    s_audio_mtu = 0;
+    s_audio_msys_min = UINT16_MAX;
+    s_audio_attempts = s_audio_accepted = 0;
+    s_audio_alloc_fail = s_audio_append_fail = s_audio_oversize = 0;
+    s_audio_notify_fail = 0;
+    s_audio_last_rc = 0;
+}
+
+void voice_ble_log_audio_stats(void)
+{
+    ESP_LOGI(TAG, "audio: mtu=%u msys_min=%u attempts=%u accepted=%u alloc=%u append=%u oversize=%u notify=%u rc=%d",
+             s_audio_mtu, s_audio_msys_min, s_audio_attempts, s_audio_accepted, s_audio_alloc_fail,
+             s_audio_append_fail, s_audio_oversize, s_audio_notify_fail,
+             s_audio_last_rc);
+}
+
+bool voice_ble_send_audio(const uint8_t *data, size_t len, uint16_t seq)
 {
     if (!voice_ble_ready() || data == NULL || len == 0) return false;
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
-    if (om == NULL) return false;           // controller buffers full -> drop
-    return ble_gatts_notify_custom(s_conn, s_audio_val_handle, om) == 0;
+    s_audio_attempts++;
+    s_audio_mtu = ble_att_mtu(s_conn);
+    // A notification spends three ATT bytes on opcode + handle. NimBLE otherwise
+    // truncates overlong packets and still reports success.
+    if (s_audio_mtu < 3 || len + 2 > s_audio_mtu - 3) {
+        s_audio_oversize++;
+        return false;
+    }
+    int free = os_msys_num_free();
+    if (free >= 0 && free < s_audio_msys_min) s_audio_msys_min = (uint16_t)free;
+    uint8_t hdr[2] = { (uint8_t)(seq & 0xFF), (uint8_t)(seq >> 8) };
+    // The caller retains one rejected frame and retries it before the next capture.
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(hdr, sizeof(hdr));
+    if (om == NULL) {
+        s_audio_alloc_fail++;
+        return false;
+    }
+    if (os_mbuf_append(om, data, len) != 0) {
+        s_audio_append_fail++;
+        os_mbuf_free_chain(om);
+        return false;
+    }
+    int rc = ble_gatts_notify_custom(s_conn, s_audio_val_handle, om);
+    if (rc != 0) {
+        s_audio_notify_fail++;
+        s_audio_last_rc = rc;
+    } else {
+        s_audio_accepted++;
+    }
+    return rc == 0;
 }
 
 bool voice_ble_send_ctrl(uint8_t code)
 {
     if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE) return false;
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(&code, 1);
+    // Control codes share the mbuf pool with the audio stream, which holds a block
+    // every 15 ms and keeps the pool near empty. A single failed attempt meant the
+    // STOP code was simply lost — the device stopped capturing but the PC never
+    // learned, so 豆包 kept recording and the stop key felt dead. Audio can afford
+    // to lose a frame; control cannot, so retry here. Ten tries over ~50 ms is far
+    // below the button's own debounce, and the caller is the worker task, not an
+    // ISR, so sleeping is safe.
+    struct os_mbuf *om = NULL;
+    for (int i = 0; i < 10; i++) {
+        om = ble_hs_mbuf_from_flat(&code, 1);
+        if (om != NULL) break;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
     if (om == NULL) return false;
     return ble_gatts_notify_custom(s_conn, s_ctrl_val_handle, om) == 0;
 }

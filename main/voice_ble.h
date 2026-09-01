@@ -21,9 +21,20 @@ void voice_ble_stop(void);
 // of the CCCD subscribe callback, which some centrals don't surface reliably).
 bool voice_ble_ready(void);
 
-// Queue one raw PCM audio frame as a notification. Non-blocking; returns false
-// if not ready or the send failed (frame dropped — harmless, PCM is stateless).
-bool voice_ble_send_audio(const uint8_t *data, size_t len);
+// Allocate the next captured-frame sequence number. Retry the same frame with
+// the same number, so the receiver sees source-frame drops rather than accepted
+// NimBLE submissions.
+uint16_t voice_ble_next_audio_seq(void);
+
+// Queue one raw PCM audio frame with its captured-frame sequence number.
+// Non-blocking; returns false if NimBLE cannot accept the frame.
+bool voice_ble_send_audio(const uint8_t *data, size_t len, uint16_t seq);
+
+// Zero the audio sequence counter. Call when a capture session starts so the
+// receiver's loss figures are per-session.
+void voice_ble_reset_audio_seq(void);
+void voice_ble_reset_audio_stats(void);
+void voice_ble_log_audio_stats(void);
 
 // Notify a control code to the PC (1=send, 2=delete). Non-blocking.
 bool voice_ble_send_ctrl(uint8_t code);

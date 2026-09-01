@@ -9,6 +9,26 @@
 #include "driver/i2s_std.h"
 #include "esp_log.h"
 
+static volatile uint32_t s_rx_ovf;      // RX ring overflows since boot
+
+// Runs in I2S ISR context: increment only, no logging, no locks.
+static bool bsp_audio_on_ovf(i2s_chan_handle_t h, i2s_event_data_t *e, void *u)
+{
+    (void)h; (void)e; (void)u;
+    s_rx_ovf++;
+    return false;                        // no task woken
+}
+
+uint32_t bsp_audio_rx_overflows(void)
+{
+    return s_rx_ovf;
+}
+
+void bsp_audio_reset_rx_overflows(void)
+{
+    s_rx_ovf = 0;
+}
+
 static const char *TAG = "bsp_audio";
 
 static esp_codec_dev_handle_t s_dev;
@@ -66,6 +86,14 @@ static esp_err_t i2s_full_duplex_init(void) {
     // esp_codec_dev_open 内部重配前会先 i2s_channel_disable,而 disable 要求通道处于
     // RUNNING;刚 init 的通道是 READY,会打一条 "channel has not been enabled yet" 错误日志。
     // 这里先 enable 一次让那次 disable 合法(此时 codec 未配,不出声)。
+    // Count RX ring overflows. The ISR drops the oldest descriptor when the reader
+    // is late (i2s_common.c does a receive-then-send on a full queue), so frames
+    // lost here never reach the PC and never show up in its delivered-rate metric.
+    // Without this counter a firmware-side drop is indistinguishable from a BLE
+    // problem, which sent several rounds of debugging to the wrong layer.
+    i2s_event_callbacks_t cbs = { .on_recv_q_ovf = bsp_audio_on_ovf };
+    i2s_channel_register_event_callback(s_rx, &cbs, NULL);
+
     i2s_channel_enable(s_tx);
     i2s_channel_enable(s_rx);
     return ESP_OK;
@@ -148,7 +176,11 @@ esp_err_t bsp_audio_set_format(uint32_t hz, uint8_t bits, uint8_t ch) {
     // ⚠ open 之后【不要】手动覆写 ES8311 的时钟分频寄存器(REG01~06):
     //   驱动已按采样率与 MCLK 精确算好,覆写会导致 ADC/DAC 时序错乱、录音回放全是杂音。
     //   这里只设麦克风模拟 PGA 增益。
-    esp_codec_dev_set_in_gain(s_dev, 30.0f);
+    // 24 dB, not 30: at 30 dB an ordinary speaking voice reached 0.0 dBFS and
+    // clipped (74 samples in one 4.6 s recording). Clipping is unrecoverable
+    // distortion, and a streaming ASR degrades sharply on it. This leaves ~6 dB of
+    // headroom with speech still around -20 dBFS.
+    esp_codec_dev_set_in_gain(s_dev, 24.0f);
 
     s_opened = true; s_hz = hz; s_bits = bits; s_ch = ch;
     ESP_LOGI(TAG, "codec 打开 %luHz/%ubit/%uch", (unsigned long)hz, bits, ch);

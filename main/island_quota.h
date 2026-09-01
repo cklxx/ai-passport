@@ -7,23 +7,28 @@
 // no JSON parsing — this module is the whole device-side contract and is pure,
 // so it runs under host tests.
 //
-// Wire packet (7 bytes, little-endian), PC -> device:
+// Wire packet, PC -> device. Two lengths are accepted so an older 7-byte sender
+// keeps working — a device flashed with this build still reads it and simply has
+// no Codex number to show:
 //   [0]    magic 0x51 ('Q')
-//   [1]    used_percentage 0..100, or 0xFF = unknown/stale
+//   [1]    Claude used_percentage 0..100, or 0xFF = unknown/stale
 //   [2..5] resets_at, unix seconds (uint32)
-//   [6]    XOR of bytes [0..5]  (so XOR of all 7 bytes == 0)
+//   [6]    Codex used_percentage 0..100, or 0xFF = unknown   (8-byte packet only)
+//   [last] XOR of every preceding byte (so XOR of the whole packet == 0)
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#define ISLAND_QUOTA_PACKET_LEN 7
+#define ISLAND_QUOTA_PACKET_LEN 8      // current senders
+#define ISLAND_QUOTA_PACKET_LEN_V1 7   // legacy: no Codex byte
 #define ISLAND_QUOTA_MAGIC 0x51
 #define ISLAND_QUOTA_UNKNOWN 0xFF
 
 typedef struct {
-    int8_t remaining_pct;  // 0..100, or -1 when unknown/stale
-    uint32_t resets_at;    // unix seconds; 0 when unknown
+    int8_t remaining_pct;        // Claude 0..100, or -1 when unknown/stale
+    int8_t codex_remaining_pct;  // Codex 0..100, or -1 when unknown/absent
+    uint32_t resets_at;          // unix seconds; 0 when unknown
 } island_quota_t;
 
 // Parse a wire packet. Returns true and fills *out only on a valid packet

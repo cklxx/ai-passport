@@ -117,3 +117,24 @@ CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 # can transmit the header as multiple records instead of stalling on EAGAIN.
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
+# NimBLE logs "GATT procedure initiated: notify" at INFO on every notification.
+# The audio path sends one every 15 ms, and esp_log writes to the USB-serial
+# console synchronously, so those two lines per frame stalled the capture worker
+# and dropped the delivered audio rate from ~100% of realtime to ~82%. Warnings
+# and errors still print. This also drops the format strings from Flash.
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+
+# 1500 ms is too long for the two long-press gestures this product uses (UP clears
+# the line, OK leaves the screen): a user who does not hold long enough gets the
+# short-press action instead, which for UP means deleting one utterance rather than
+# clearing. 800 ms still separates cleanly from a deliberate tap.
+CONFIG_BUTTON_LONG_PRESS_TIME_MS=800
+
+# The audio stream sends a 482-byte notify every 15 ms. At the default 12 blocks of
+# 256 bytes that is only 6 frames in flight, and the pool ran dry for 54% of sends
+# (device counters read sent=29 dry=34 in one session) — every failure is a frame
+# the PC never receives, which a streaming ASR reads as a gap. 48 blocks holds
+# ~24 frames, covering a 360 ms controller stall. Cost is 48*256 = 12 KB of RAM,
+# affordable next to the ~400 KB on this part.
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=48

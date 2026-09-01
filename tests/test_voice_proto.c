@@ -23,6 +23,9 @@ static void test_ctrl(void)
     assert(b[0] == VOICE_MAGIC && b[1] == 1);
     assert(voice_pack_ctrl(b, sizeof(b), VOICE_CTRL_DELETE) == 2 && b[1] == 2);
     assert(voice_pack_ctrl(b, sizeof(b), VOICE_CTRL_STOP) == 2 && b[1] == 4);
+    assert(voice_pack_ctrl(b, sizeof(b), VOICE_CTRL_DELETE_ALL) == 2 && b[1] == 5);
+    assert(voice_ctrl_valid(VOICE_CTRL_DELETE_ALL));
+
     // bad code / small buffer rejected
     assert(voice_pack_ctrl(b, sizeof(b), (voice_ctrl_t)0) == 0);
     assert(voice_pack_ctrl(b, sizeof(b), (voice_ctrl_t)99) == 0);
@@ -32,7 +35,7 @@ static void test_ctrl(void)
 static void test_valid(void)
 {
     assert(!voice_ctrl_valid(0) && voice_ctrl_valid(1) && voice_ctrl_valid(4));
-    assert(!voice_ctrl_valid(5) && !voice_ctrl_valid(-1));
+    assert(!voice_ctrl_valid(6) && !voice_ctrl_valid(-1));
 }
 
 int main(void)

@@ -2,7 +2,7 @@
 
 bool voice_ctrl_valid(int code)
 {
-    return code >= VOICE_CTRL_SEND && code <= VOICE_CTRL_STOP;
+    return code >= VOICE_CTRL_SEND && code <= VOICE_CTRL_DELETE_ALL;
 }
 
 size_t voice_pack_audio_header(uint8_t *buf, size_t cap, uint16_t seq)

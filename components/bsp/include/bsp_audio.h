@@ -18,6 +18,17 @@ esp_err_t bsp_audio_set_format(uint32_t hz, uint8_t bits, uint8_t ch);
 
 // 播放 / 录音。bytes 为字节数(16bit 单声道时 = 采样数 x 2)。
 esp_err_t bsp_audio_write(const void *pcm, size_t bytes);
+// RX ring overflows since boot. The I2S ISR drops the oldest captured block when
+// the reader is late, and that loss is invisible to any downstream metric — the PC
+// only counts frames that arrived. A rising value means the device, not the link,
+// is losing audio.
+uint32_t bsp_audio_rx_overflows(void);
+
+// Zero the overflow count. Call at the start of a capture session so the figure
+// reported at the end is per-session; a since-boot total cannot show whether a
+// change helped.
+void bsp_audio_reset_rx_overflows(void);
+
 esp_err_t bsp_audio_read(void *pcm, size_t bytes);
 
 // 输出音量 0..100(%)。

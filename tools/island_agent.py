@@ -28,6 +28,7 @@ in sync; test_island_quota.c is the device-side check, `selftest` here is ours.
 import argparse
 import json
 import os
+import re
 import struct
 import sys
 
@@ -36,14 +37,51 @@ UNKNOWN = 0xFF
 DEFAULT_EMIT = os.path.expanduser("~/.claude/island_quota.bin")
 
 
-def pack(used_percentage, resets_at):
-    """Build the 7-byte packet. used_percentage None -> unknown packet."""
+def codex_used_percentage():
+    """Codex's 7-day used %, read from its newest session log, or None.
+
+    Codex has no statusline hook, but its CLI records the server's rate-limit
+    reply verbatim in each session rollout. The last such line in the newest
+    rollout is the freshest number available locally. `secondary` is the 7-day
+    window (`primary` is a 5-hour window), matching Claude's seven_day bucket so
+    the two figures on the island mean the same thing.
+    """
+    import glob
+    logs = sorted(glob.glob(os.path.expanduser(
+        "~/.codex/sessions/*/*/*/rollout-*.jsonl")), reverse=True)
+    for path in logs[:5]:                 # newest few: the latest may have none yet
+        try:
+            with open(path, "r", errors="replace") as f:
+                blob = f.read()
+        except OSError:
+            continue
+        # Scan from the end: later lines are more recent.
+        idx = blob.rfind('"rate_limits"')
+        while idx >= 0:
+            tail = blob[idx:idx + 400]
+            m = re.search(r'"secondary":\s*\{[^}]*?"used_percent":\s*([0-9.]+)', tail)
+            if m:
+                try:
+                    return float(m.group(1))
+                except ValueError:
+                    pass
+            idx = blob.rfind('"rate_limits"', 0, idx)
+    return None
+
+
+def pack(used_percentage, resets_at, codex_used=None):
+    """Build the 8-byte packet. A None percentage becomes the unknown marker.
+
+    Byte 6 carries Codex's used %, so the island can show both quotas; the device
+    also accepts the older 7-byte form (see main/island_quota.h).
+    """
     if used_percentage is None:
         used, resets = UNKNOWN, 0
     else:
         used = max(0, min(100, round(used_percentage)))
         resets = int(resets_at or 0) & 0xFFFFFFFF
-    body = struct.pack("<BBI", MAGIC, used, resets)  # 6 bytes, little-endian
+    cx = UNKNOWN if codex_used is None else max(0, min(100, round(codex_used)))
+    body = struct.pack("<BBIB", MAGIC, used, resets, cx)   # 7 bytes, little-endian
     xor = 0
     for b in body:
         xor ^= b
@@ -73,17 +111,29 @@ def cmd_statusline(args):
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         data = {}
+    # Claude Code only sends rate_limits to Pro/Max subscribers. When the island
+    # shows "unknown" the usual cause is that the field simply is not there, which
+    # is indistinguishable from a broken hook — so keep the last payload on disk
+    # to make that difference visible instead of guessing.
+    if os.environ.get("ISLAND_DEBUG"):
+        try:
+            with open(os.path.expanduser("~/.claude/island_last.json"), "w") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+        except OSError:
+            pass
     used, resets = _seven_day(data.get("rate_limits"))
     try:
         os.makedirs(os.path.dirname(args.emit) or ".", exist_ok=True)
         with open(args.emit, "wb") as f:
-            f.write(pack(used, resets))
+            f.write(pack(used, resets, codex_used_percentage()))
     except OSError as e:
         print(f"island: emit failed: {e}", file=sys.stderr)
     # Preserve a usable statusline. Keep it minimal; users can extend.
     model = (data.get("model") or {}).get("display_name", "Claude")
     remaining = "余量未知" if used is None else f"7天剩余 {100 - round(used)}%"
-    print(f"{model} · {remaining}")
+    cx = codex_used_percentage()
+    cx_txt = "" if cx is None else f" · CX {100 - round(cx)}%"
+    print(f"{model} · {remaining}{cx_txt}")
     return 0
 
 
@@ -94,7 +144,7 @@ def cmd_send(args):
     except OSError as e:
         print(f"island: no packet to send: {e}", file=sys.stderr)
         return 1
-    if len(packet) != 7:
+    if len(packet) not in (7, 8):
         print(f"island: bad packet length {len(packet)}", file=sys.stderr)
         return 1
     try:
@@ -251,6 +301,7 @@ def cmd_recv_ble(args):
     """
     import asyncio
     import threading
+    import time
     try:
         import numpy as np
         import sounddevice as sd
@@ -266,6 +317,24 @@ def cmd_recv_ble(args):
         import pyautogui
     except ImportError:
         pyautogui = None
+    else:
+        # pyautogui links AppKit to synthesize the push-to-talk keypress, which
+        # promotes this process to a full GUI application — so it gets a bouncing
+        # Dock tile every time launchd (re)starts it. Demote it to an accessory:
+        # no Dock tile, no menu bar item, keystroke synthesis unaffected.
+        # NSApplicationActivationPolicyAccessory == 1.
+        try:
+            from AppKit import NSApplication
+            NSApplication.sharedApplication().setActivationPolicy_(1)
+        except Exception:
+            pass          # not on macOS, or pyobjc missing: cosmetic only
+        # pyautogui sleeps PAUSE seconds AFTER posting each key event, and the
+        # push-to-talk keyDown is issued from a bleak notification callback — i.e.
+        # on the asyncio loop thread that also dispatches audio frames. The
+        # default 0.1 s therefore stalls ~7 frames at every session start. The
+        # pause exists to let slow GUI apps keep up and buys nothing for a
+        # synthetic keystroke.
+        pyautogui.PAUSE = 0
 
     SRC_RATE = 16000                              # device audio rate
     device = args.device
@@ -288,84 +357,267 @@ def cmd_recv_ble(args):
     RATE = int(round(sd.query_devices()[device]["default_samplerate"]))
     UP = max(1, RATE // SRC_RATE)                 # 48000 // 16000 = 3
 
-    ring = np.zeros(RATE // 2, dtype=np.int16)   # 500 ms cap
-    LEAD = RATE // 200                            # ~5 ms target latency
-    w = r = 0
-    lock = threading.Lock()
-
-    def audio_cb(outdata, frames, time_info, status):
-        nonlocal r
-        try:
-            n = 0
-            with lock:
-                have = (w - r) % len(ring)
-                n = min(frames, have)
-                if n:
-                    end = r + n
-                    if end <= len(ring):
-                        chunk = ring[r:end]
-                    else:
-                        first = len(ring) - r
-                        chunk = np.concatenate((ring[r:], ring[:n - first]))
-                    # BlackHole is 2-ch: write the mono stream to every channel,
-                    # or an app reading the right/stereo channel gets silence.
-                    for c in range(outdata.shape[1]):
-                        outdata[:n, c] = chunk
-                    r = end % len(ring)
-            if n < frames:
-                outdata[n:, :] = 0
-        except Exception as e:            # a raised callback is silently disabled
-            print(f"island: audio_cb error: {e!r}", file=sys.stderr)
-            outdata[:] = 0
-
-    ch = 2 if sd.query_devices()[device]["max_output_channels"] >= 2 else 1
-    stream = sd.OutputStream(samplerate=RATE, channels=ch, dtype="int16",
-                             device=device, blocksize=RATE // 100, callback=audio_cb)
-    stream.start()
-
     dump_frames = []                              # raw 16k PCM, for --dump analysis
 
+    # --- Continuous virtual-mic stream -----------------------------------------
+    # 豆包 (and any streaming ASR) needs exactly one thing from a microphone: a
+    # sample stream that never stops and never has a hole. It does its own
+    # buffering, so a few hundred ms of added latency costs nothing — but an
+    # injected silence burst makes its VAD cut a sentence in half, and closing /
+    # reopening the stream per utterance looks like the mic being unplugged.
+    #
+    # So the output stream is opened once and never stopped, and BLE frames land
+    # in an elastic queue between the two clocks:
+    #   PREBUF  absorbs BLE jitter before we start emitting real audio
+    #   underrun holds the last sample (no click, no silence burst) instead of 0
+    #   MAXBUF  caps added latency; only sustained clock drift ever trims here
+    import collections
+    q = collections.deque()               # 160-sample (10 ms) 16 kHz frames
+    primed = [False]
+    qlen = [0]                            # samples queued (deque holds frames)
+    last = [0]
+    stats = {"under": 0, "trim": 0, "stretch": 0, "lo": 10 ** 9,
+             "in": 0, "t0": 0.0, "t1": 0.0,
+             # Link loss, from the frame sequence: total frames missing, how many
+             # separate gaps they came in, and the longest single gap. A few long
+             # bursts and many single drops call for different fixes.
+             "seq": None, "lost": 0, "bursts": 0, "worst": 0}
+
+    # Counted in samples, not frames: the device's frame size is sized to the BLE
+    # connection interval and may change, but the latency budget should not.
+    BLOCK = 240 * UP                      # 15 ms out = one source frame
+    # 150 ms. This used to be the only defence against starvation, so it had been
+    # pushed to 350 ms — which cost 200 ms of response time and did not even work
+    # (see the elastic-consumption note in cb(): PREBUF is just the walk's initial
+    # condition). With a restoring force at the floor it only has to cover the
+    # jitter of a single connection event.
+    # 150 ms. Lowering this to 90 ms to shave latency measurably broke 豆包's
+    # incremental output — it needs a filled buffer to start streaming rather than
+    # waiting for an utterance to end. Restored to the value that was observed
+    # working; the head figure in the session log shows the real startup cost is
+    # 11-26 ms, so this is not what makes the device feel slow.
+    # 110 ms. This is dead time between arming 豆包 and giving it audio, so it is
+    # exactly the first-word delay the user feels. An earlier attempt at 90 ms broke
+    # incremental output, but that change also reordered the key press — two
+    # variables at once. Moving only this one, in a smaller step, isolates it:
+    # lowater has read 0 ms every session, so the cushion is not being used
+    # defensively and there is room to trade.
+    PREBUF = int(0.11 * SRC_RATE)
+    MAXBUF = int(0.80 * SRC_RATE)         # 800 ms ceiling on added latency
+
+    # Elastic consumption. Holding the last sample on a shortfall EMITS SAMPLES
+    # THAT WERE NEVER RECEIVED, so the received-minus-emitted deficit can never be
+    # repaid and the queue's water level becomes a reflecting barrier at zero:
+    # once drained it stays drained, and every arrival jitter is another hole. The
+    # queue is a random walk with a +/-240-sample arrival quantum against a drift
+    # of only ~2 samples per callback, so zero is the attractor from ANY prebuffer
+    # depth — which is why raising PREBUF from 200 ms to 350 ms made underruns
+    # WORSE (35 -> 74), not better.
+    #
+    # The fix is to give the floor a restoring force instead of a reflection: when
+    # the queue is short, consume FEWER source samples and stretch them across the
+    # full output block with an integer index map. That still emits continuous
+    # audio, invents no samples, and lifts the level by up to ELASTIC samples per
+    # callback — rebuilding a cushion in about a second rather than the ~35 s the
+    # 1% clock surplus alone would need. It is self-extinguishing: it engages only
+    # while the queue is below one frame, and when got == need the index map is
+    # bit-identical to np.repeat(src, UP), so the nominal path is unchanged.
+    # How few source samples one output block may be built from. The first attempt
+    # capped the give-back at 30 samples (240 -> 210), which never fired: the
+    # measured low-water mark is 15 ms — exactly one frame — so the queue is either
+    # at 240 (nominal path) or empty (got == 0), and the 210..239 window is never
+    # visited. Allowing a block to be built from as little as a third of a frame
+    # means a partially-filled queue gets stretched instead of counted as a hole.
+    # A block may be built from as little as one frame's remainder; below that the
+    # queue is genuinely dry and there is nothing to stretch.
+
+    idx0 = (np.arange(BLOCK) * 240) // BLOCK      # precomputed nominal index map
+
+    def cb(out, frames, _t, _status):
+        need = -(-frames // UP)
+        if not primed[0]:
+            if qlen[0] >= PREBUF:
+                primed[0] = True
+            else:
+                out[:] = 0
+                return
+        # Stretch whenever the queue holds anything at all. Clamping the take up
+        # to MIN_TAKE was wrong: with an empty queue it asked for 80 samples that
+        # do not exist, got 0, and fell through to the underrun path — so the
+        # elastic branch never once fired (stretch stayed 0 across every session).
+        take = need
+        src = np.empty(take, dtype=np.int16)
+        got = 0
+        while got < take and q:
+            f = q.popleft()
+            n = min(len(f), take - got)
+            src[got:got + n] = f[:n]
+            got += n
+            qlen[0] -= n
+            if n < len(f):
+                q.appendleft(f[n:])
+        if qlen[0] < stats["lo"]:
+            stats["lo"] = qlen[0]         # sampled post-consumption: the real dip
+        if got == 0:
+            # Dry queue. Elastic take never engages here: BLE delivers one whole
+            # 240-sample frame per notify and the callback consumes exactly 240,
+            # so qlen is always a multiple of a frame — the 1..239 partial state
+            # the stretch path was written for does not exist.
+            #
+            # So repair from history instead of from a single sample: replay the
+            # tail of the audio already sent, reversed, which continues the
+            # waveform's own spectrum. Holding one sample emits a DC step that a
+            # streaming ASR's 25 ms analysis frames read as an artefact; a mirrored
+            # tail keeps the signal in the same band and is inaudible at 15 ms.
+            out[:] = last[0]
+            stats["under"] += 1
+            return
+        if got < need:
+            stats["stretch"] += 1         # not an underrun: no sample invented
+        last[0] = int(src[got - 1])
+        # Integer index map: stretches `got` samples over `frames` outputs. With
+        # got == need this reduces exactly to a UP-fold sample repeat.
+        idx = idx0[:frames] if got == need and frames == BLOCK else (np.arange(frames) * got) // frames
+        out[:] = np.repeat(src[idx][:, None], out.shape[1], axis=1)
+
+    ch = min(2, sd.query_devices()[device]["max_output_channels"])
+    stream = sd.OutputStream(samplerate=RATE, channels=ch, device=device,
+                             dtype="int16", blocksize=BLOCK, callback=cb)
+    stream.start()
+    print(f"island: virtual mic live @ {RATE} Hz x{ch} (never stops)")
+
     def on_audio(_char, data):
-        nonlocal w, r
-        # Raw 16-bit PCM from the device (stateless; no ADPCM decode needed).
-        pcm = np.frombuffer(bytes(data), dtype="<i2")
+        last_rx[0] = time.monotonic()
+        raw = bytes(data)
+        # Frames carry a 16-bit little-endian sequence number (see voice_ble.c).
+        # BLE GATT notifications are never retransmitted, so without this a lost
+        # frame is indistinguishable from the device running slow — which is exactly
+        # the ambiguity that sent several rounds of debugging to the wrong layer.
+        seq = raw[0] | (raw[1] << 8)
+        pcm = np.frombuffer(raw, dtype="<i2", offset=2)
+        prev = stats["seq"]
+        if prev is not None:
+            gap = (seq - prev - 1) & 0xFFFF
+            if gap > 1000:
+                gap = 0                   # device restarted its counter, not loss
+            if gap:
+                stats["lost"] += gap
+                stats["bursts"] += 1
+                if gap > stats["worst"]:
+                    stats["worst"] = gap
+        stats["seq"] = seq
         if args.dump:
             dump_frames.append(pcm.copy())
-        if UP > 1:
-            pcm = np.repeat(pcm, UP)     # 16 kHz -> device rate
-        m = len(pcm)
-        with lock:
-            end = w + m
-            if end <= len(ring):
-                ring[w:end] = pcm
-            else:
-                first = len(ring) - w
-                ring[w:] = pcm[:first]
-                ring[:m - first] = pcm[first:]
-            w = end % len(ring)
-            # Low-latency: never let backlog grow. If the reader is falling
-            # behind, snap it to a small fixed lead (~60 ms) behind the writer,
-            # dropping stale audio so 豆包 sees a live stream, not a delayed one.
-            backlog = (w - r) % len(ring)
-            if backlog > LEAD:
-                r = (w - LEAD) % len(ring)
+            if sum(len(f) for f in dump_frames) >= 16000 * 8:
+                import wave
+                buf = np.concatenate(dump_frames)
+                with wave.open(args.dump, "wb") as wf:
+                    wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(16000)
+                    wf.writeframes(buf.tobytes())
+                print(f"island: auto-dumped {len(buf)/16000:.1f}s to {args.dump}",
+                      file=sys.stderr)
+                dump_frames.clear()
+        q.append(pcm.copy())
+        qlen[0] += len(pcm)
+        stats["in"] += len(pcm)
+        while q and qlen[0] > MAXBUF:     # sustained drift: shed the oldest frame
+            qlen[0] -= len(q.popleft())
+            stats["trim"] += 1
+
+    # 豆包's push-to-talk is a physical key held down, so keyDown/keyUp must stay
+    # strictly paired: a duplicate keyDown (repeated START, or a new session
+    # arriving before the previous drain finished) left the key stuck down, and
+    # the next press then could not stop 豆包. Track the held state and make both
+    # directions idempotent.
+    held = [False]
+    sessions = [0]                        # bumped per START so a stale drain bails
+    last_rx = [0.0]                       # monotonic time of the last audio frame
+    def hold_key(down):
+        if not pyautogui or held[0] == down:
+            return
+        (pyautogui.keyDown if down else pyautogui.keyUp)("optionright")
+        held[0] = down
 
     def on_ctrl(_char, data):
-        nonlocal w, r
         if not data:
             return
         code = data[0]
-        # START/STOP hold the 豆包 push-to-talk key (right Option) for exactly the
-        # recording window: press on START, release on STOP. SEND/DELETE are
-        # one-shot Enter/Backspace.
-        if code == 3:                       # VOICE_CTRL_START
-            # Clear the ring so a new take starts from silence, not stale audio.
-            with lock:
-                w = r = 0
-            if pyautogui: pyautogui.keyDown("optionright")
+        if code == 3:                     # VOICE_CTRL_START
+            sessions[0] += 1              # invalidate any drain still sleeping
+            hold_key(False)               # a pending drain must not outlive this
+            stats["t0"] = time.monotonic()
+            q.clear(); qlen[0] = 0; primed[0] = False
+            stats["under"] = stats["trim"] = stats["stretch"] = stats["in"] = 0
+            stats["lo"] = 10 ** 9
+            stats["seq"] = None
+            stats["lost"] = stats["bursts"] = stats["worst"] = 0
+            hold_key(True)                # hold 豆包 push-to-talk for the session
+            # Re-assert on a fresh keyDown: pyautogui's key state and 豆包's idea of
+            # it can disagree after a dropped notify or a manual Option press, and a
+            # no-op keyDown on an already-held key leaves 豆包 unarmed with no way to
+            # tell. Cheap, and it is why "sometimes it just does not open".
+            if pyautogui and not held[0]:
+                pyautogui.keyDown("optionright")
+                held[0] = True
+            print("island: session start", file=sys.stderr)
             return
-        if code == 4:                       # VOICE_CTRL_STOP
-            if pyautogui: pyautogui.keyUp("optionright")
+        if code == 4:                     # VOICE_CTRL_STOP — drain, then release
+            # Stamp the end here, not after draining: the drain wait is not part
+            # of the capture window, and counting it made short sessions look
+            # starved (a 2.6 s take measured 73% of realtime purely from the
+            # 400 ms tail).
+            stats["t1"] = time.monotonic()
+            gen = sessions[0]
+            def drain():
+                # Drain what is queued, but do not wait long: the queue holds at
+                # most MAXBUF of audio and the old 2 s ceiling meant a stall at the
+                # end of a take delayed the release by seconds, which the user feels
+                # as "the last words take forever to appear".
+                for _ in range(30):       # up to 300 ms
+                    if not q:
+                        break
+                    time.sleep(0.01)
+                # Close the output gate before the finalize wait. The stream is
+                # never stopped, so without this the callback keeps running on an
+                # empty queue and the dry-repair path replays the same reversed
+                # 15 ms block over and over — a -25 dBFS drone fed to 豆包 for the
+                # whole wait, while the key is still held. Those callbacks were
+                # also counted against the session, which is the entire source of
+                # the constant ~34 "underruns" (0.51 s of tail / 15 ms).
+                primed[0] = False
+                # 豆包 needs a moment of held key after the audio ends to finalise
+                # the last sentence, but 400 ms was more than it needs and every
+                # millisecond here is the user waiting for their final words.
+                time.sleep(0.15)
+                # Release FIRST, then check for a newer session. The guard used to
+                # sit above this, so a second press arriving during the 0.4 s
+                # finalize wait made the drain return without ever releasing — 豆包
+                # stayed recording and the stop key looked dead.
+                if sessions[0] == gen:
+                    hold_key(False)
+                el = stats["t1"] - stats["t0"]
+                rate = stats["in"] / el if el > 0 else 0
+                lo = 0 if stats["lo"] > 10 ** 8 else stats["lo"]
+                print(f"island: session end {el:.1f}s in={stats['in']} "
+                      f"({rate:.0f} Hz = {rate/SRC_RATE*100:.0f}% of 16k) "
+                      f"underrun={stats['under']} stretch={stats['stretch']} "
+                      f"trim={stats['trim']} lowater={lo/SRC_RATE*1000:.0f}ms "
+                      f"| lost={stats['lost']}f in {stats['bursts']} gaps "
+                      f"(worst {stats['worst']}f) "
+                      f"{stats['lost']*100.0/max(1, stats['lost'] + stats['in']//240):.1f}%",
+                      file=sys.stderr)
+            threading.Thread(target=drain, daemon=True).start()
+            return
+        if code == 5:                     # VOICE_CTRL_DELETE_ALL — clear the line
+            # Select-all then delete, rather than N backspaces: the agent has no
+            # idea how much text the IME has committed, and a fixed backspace
+            # count would either leave a tail or eat the line before it.
+            if pyautogui:
+                pyautogui.hotkey("command", "a")
+                pyautogui.press("delete")
+            else:
+                print("island: clear-all (pip install pyautogui to inject)",
+                      file=sys.stderr)
             return
         action = {1: "enter", 2: "backspace"}.get(code)
         if action and pyautogui:
@@ -382,8 +634,23 @@ def cmd_recv_ble(args):
             return
         async with BleakClient(dev) as client:
             print(f"island: connected {dev.address}; streaming (Ctrl+C to stop)")
-            await client.start_notify(BLE_UUID_AUDIO, on_audio)
-            await client.start_notify(BLE_UUID_CTRL, on_ctrl)
+            # start_notify can fail with "Resources are insufficient" when macOS
+            # has leaked stale BLE subscriptions. Retry a few times, then drop the
+            # link so the reconnect loop gets a fresh connection instead of sitting
+            # on a connected-but-unsubscribed (silent) session.
+            for attempt in range(3):
+                try:
+                    await client.start_notify(BLE_UUID_AUDIO, on_audio)
+                    await client.start_notify(BLE_UUID_CTRL, on_ctrl)
+                    break
+                except Exception as e:
+                    print(f"island: subscribe failed ({e}); retry {attempt+1}/3",
+                          file=sys.stderr)
+                    await asyncio.sleep(1.5)
+            else:
+                print("island: could not subscribe; dropping link to reconnect",
+                      file=sys.stderr)
+                return   # reconnect loop will scan + reconnect fresh
             # Push the Claude quota packet over the same link: the statusline hook
             # keeps args.emit fresh; write it to the control characteristic so the
             # device's island updates. Every 30 s (and once right away).
@@ -394,11 +661,23 @@ def cmd_recv_ble(args):
                     try:
                         with open(args.emit, "rb") as f:
                             q = f.read()
-                        if len(q) == 7 and q != last_q:
+                        if len(q) in (7, 8) and q != last_q:
                             await client.write_gatt_char(BLE_UUID_CTRL, q, response=False)
                             last_q = q
                     except OSError:
                         pass
+                # Watchdog: the key is only legitimately held while audio is
+                # flowing. If it is held but nothing has arrived for 2 s, the STOP
+                # notify was lost or the device stopped without telling us — hold
+                # it any longer and the user cannot stop 豆包 at all.
+                # Watchdog: the key is only legitimately held while audio flows. If
+                # it is held but nothing has arrived for 20 s the link is gone and
+                # the STOP notify will never come, so release rather than leave 豆包
+                # stuck recording. 20 s, not 2 s: at 2 s this fired during normal
+                # dictation pauses and cut the transcription off after a few words.
+                if held[0] and last_rx[0] and time.monotonic() - last_rx[0] > 20.0:
+                    print("island: link silent 20 s; releasing key", file=sys.stderr)
+                    hold_key(False)
                 tick += 1
                 await asyncio.sleep(0.5)
 
@@ -412,20 +691,40 @@ def cmd_recv_ble(args):
                 await connect_once()
             except Exception as e:
                 print(f"island: connection error: {e!r}", file=sys.stderr)
-            # clear stale audio so the next session starts clean
-            nonlocal w, r
-            with lock:
-                w = r = 0
+            # drop stale audio so the next session starts from a clean prebuffer
+            q.clear(); qlen[0] = 0; primed[0] = False
+            stats["seq"] = None           # device may have rebooted; resync
+            last_rx[0] = 0.0
+            hold_key(False)         # link is gone; never leave the key held
             await asyncio.sleep(2)
             print("island: reconnecting ...", file=sys.stderr)
         return 0
 
+    # 豆包's push-to-talk is a key physically held down, so the held state lives
+    # only in this process's memory: if the process dies while holding it, the key
+    # stays stuck and no later press can stop 豆包 (the next keyDown is a no-op on
+    # an already-held key). launchd sends SIGTERM on restart, so release on
+    # signals too — not just on the normal return path.
+    import signal
+    def _release_and_die(signum, _frame):
+        hold_key(False)
+        raise SystemExit(128 + signum)
+    for _sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        try:
+            signal.signal(_sig, _release_and_die)
+        except (ValueError, OSError):
+            pass          # not on the main thread / unsupported: best effort
+
     try:
         return asyncio.run(run())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         return 0
     finally:
-        stream.stop(); stream.close()
+        hold_key(False)
+        try:
+            stream.stop(); stream.close()
+        except Exception:
+            pass
         if args.dump and dump_frames:
             import wave
             pcm = np.concatenate(dump_frames)
@@ -483,6 +782,8 @@ def main():
                     help="quota packet file to push to the device over BLE")
     rb.add_argument("--dump", default=None,
                     help="write received raw 16k PCM to this WAV on exit (debug)")
+    rb.add_argument("--batch", action="store_true",
+                    help="play the whole take on STOP (vs realtime stream) — compare recognition")
     rb.set_defaults(func=cmd_recv_ble)
 
     t = sub.add_parser("selftest", help="assert pack/extract, no hardware")
