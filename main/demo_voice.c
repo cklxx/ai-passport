@@ -75,6 +75,9 @@ static volatile unsigned s_elapsed_ms;
 // hot path (lock contention there measurably starved the audio stream).
 static volatile int s_level;
 static unsigned s_lvl_tick;              // worker-only: frames since the last RMS
+#define VOICE_SILENCE_LEVEL 10           // below this the smoothed level reads quiet
+#define VOICE_SILENCE_TICKS 50           // 50 * 60 ms = 3.0 s of quiet ends the take
+static unsigned s_quiet_ticks;           // worker-only: consecutive quiet RMS ticks
 static bool s_backlog;                   // worker-only: holds one unsent frame
 static int32_t s_hp_x, s_hp_y;           // worker-only: high-pass filter state
 static uint64_t s_read_us, s_send_us, s_retry_us;
@@ -144,6 +147,10 @@ static void worker_task(void *arg)
         bool ready = voice_ble_ready();
         // One-shot control (send/delete) — only meaningful once connected.
         int ctrl = s_pending_ctrl;
+        // Hold a SEND back while capture is still running: OK during recording means
+        // stop-then-send, and Enter must not reach 豆包 before the STOP notify does.
+        bool send_deferred = (ctrl == VOICE_CTRL_SEND && capturing);
+        if (send_deferred) ctrl = 0;
         if (ctrl != 0 && ready && voice_ctrl_valid(ctrl)) {
             // Clear only on success: a control code that could not be sent is
             // retried next iteration rather than dropped. The stop key felt dead
@@ -156,6 +163,7 @@ static void worker_task(void *arg)
 
         if (s_want_record && ready && !capturing) {
             capturing = true; s_elapsed_ms = 0; s_level = 0; s_lvl_tick = 0;
+            s_quiet_ticks = 0;
             bsp_audio_reset_rx_overflows();   // per-session count, see the STOP log
             voice_ble_reset_audio_seq();      // so the PC reports per-session loss
             s_hp_x = s_hp_y = 0;              // no filter ring-in from the last take
@@ -248,6 +256,18 @@ static void worker_task(void *arg)
             if (lvl > 100) lvl = 100;
             int prev = s_level;
             s_level = lvl > prev ? lvl : prev - (prev - lvl) / 2;
+
+            // Auto-stop on sustained silence, so a take ends by itself when the
+            // user stops talking. The level is computed every 4th frame (60 ms), so
+            // the counter ticks in 60 ms units. 3 s of quiet: past a pause for
+            // thought, short enough not to feel like a hang. Earlier values of
+            // 2.4 s clipped people mid-sentence. DOWN stops immediately, and any
+            // speech resets the count.
+            if (lvl < VOICE_SILENCE_LEVEL) {
+                if (++s_quiet_ticks >= VOICE_SILENCE_TICKS) s_want_record = false;
+            } else {
+                s_quiet_ticks = 0;
+            }
         }
 
         uint16_t seq = voice_ble_next_audio_seq();
@@ -503,5 +523,13 @@ void demo_voice_key(bsp_btn_t btn, bsp_btn_ev_t ev)
     // OK stays on CLICK: its long-press leaves this screen for onboarding
     // (main.c), and BUTTON_PRESS_DOWN also fires at the start of a long press, so
     // acting on the press would send before the gesture could complete.
-    if (ev == BSP_BTN_CLICK) s_pending_ctrl = VOICE_CTRL_SEND;
+    if (ev == BSP_BTN_CLICK) {
+        // While recording, OK means "I am done — send it": stop capture and send in
+        // one press, rather than making the user stop with DOWN and then send.
+        // The worker sees s_want_record go false, emits STOP, and then finds the
+        // pending SEND, so the PC receives them in that order and 豆包 has finished
+        // the utterance before Enter arrives.
+        if (st == ST_RECORDING) s_want_record = false;
+        s_pending_ctrl = VOICE_CTRL_SEND;
+    }
 }

@@ -396,13 +396,13 @@ def cmd_recv_ble(args):
     # waiting for an utterance to end. Restored to the value that was observed
     # working; the head figure in the session log shows the real startup cost is
     # 11-26 ms, so this is not what makes the device feel slow.
-    # 110 ms. This is dead time between arming 豆包 and giving it audio, so it is
-    # exactly the first-word delay the user feels. An earlier attempt at 90 ms broke
-    # incremental output, but that change also reordered the key press — two
-    # variables at once. Moving only this one, in a smaller step, isolates it:
-    # lowater has read 0 ms every session, so the cushion is not being used
-    # defensively and there is room to trade.
-    PREBUF = int(0.11 * SRC_RATE)
+    # 100 ms. This is dead time between arming 豆包 and giving it audio, so it is
+    # exactly the first-word delay the user feels. Walked down in 10 ms steps with a
+    # listening test at each one, because an earlier jump straight to 90 ms broke
+    # incremental output — though that change also reordered the key press, so the
+    # cause was never isolated. lowater reads 0 ms every session, meaning the cushion
+    # is not being used defensively, which is where the room to trade comes from.
+    PREBUF = int(0.10 * SRC_RATE)
     MAXBUF = int(0.80 * SRC_RATE)         # 800 ms ceiling on added latency
 
     # Elastic consumption. Holding the last sample on a shortfall EMITS SAMPLES
@@ -568,6 +568,16 @@ def cmd_recv_ble(args):
             # 400 ms tail).
             stats["t1"] = time.monotonic()
             gen = sessions[0]
+            # Release the key on a timer that cannot be delayed by the drain loop.
+            # It used to happen only after draining plus a finalize wait — around
+            # 450 ms of work on a thread that can be descheduled — so an occasional
+            # stall left 豆包 recording with the stop key apparently dead. A
+            # separate short timer makes the release unconditional.
+            def release():
+                if sessions[0] == gen:
+                    hold_key(False)
+            threading.Timer(0.9, release).start()   # backstop; drain releases sooner
+
             def drain():
                 # Drain what is queued, but do not wait long: the queue holds at
                 # most MAXBUF of audio and the old 2 s ceiling meant a stall at the
@@ -584,11 +594,20 @@ def cmd_recv_ble(args):
                 # whole wait, while the key is still held. Those callbacks were
                 # also counted against the session, which is the entire source of
                 # the constant ~34 "underruns" (0.51 s of tail / 15 ms).
+                # Let the output stream play out what it already holds before
+                # closing the gate. Closing immediately after the drain loop cut the
+                # last frames — the queue being empty does not mean the audio has
+                # reached 豆包 yet, and a truncated tail is exactly the "last few
+                # words are slow or wrong" symptom.
+                time.sleep(0.12)
                 primed[0] = False
                 # 豆包 needs a moment of held key after the audio ends to finalise
                 # the last sentence, but 400 ms was more than it needs and every
                 # millisecond here is the user waiting for their final words.
-                time.sleep(0.15)
+                # 豆包 revises the tail of an utterance after the audio ends, so
+                # this wait is not dead time — releasing early commits a rough first
+                # pass instead of the corrected text.
+                time.sleep(0.45)
                 # Release FIRST, then check for a newer session. The guard used to
                 # sit above this, so a second press arriving during the 0.4 s
                 # finalize wait made the drain return without ever releasing — 豆包
@@ -620,6 +639,22 @@ def cmd_recv_ble(args):
                       file=sys.stderr)
             return
         action = {1: "enter", 2: "backspace"}.get(code)
+        if action == "enter" and held[0]:
+            # Enter must not reach 豆包 while its push-to-talk key is still held: in
+            # that state 豆包 treats it as cancelling the in-progress utterance and
+            # the whole transcription disappears. OK during recording legitimately
+            # arrives here before the release timer has fired, so wait for the key to
+            # come up, then press Enter.
+            def send_enter():
+                for _ in range(120):      # up to 1.2 s
+                    if not held[0]:
+                        break
+                    time.sleep(0.01)
+                time.sleep(0.18)          # let 豆包 commit the finalised text first
+                if pyautogui:
+                    pyautogui.press("enter")
+            threading.Thread(target=send_enter, daemon=True).start()
+            return
         if action and pyautogui:
             pyautogui.press(action)
         elif action:
