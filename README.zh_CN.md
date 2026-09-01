@@ -36,14 +36,18 @@
 ## 安装
 
 ```sh
-brew install blackhole-2ch
-python3 -m pip install bleak sounddevice numpy pyautogui pyobjc-framework-Cocoa
+brew install blackhole-2ch python@3.11        # bleak 需要 Python 3.10+
+python3.11 -m pip install bleak sounddevice numpy pyautogui pyobjc-framework-Cocoa
 
-. $IDF_PATH/export.sh          # ESP-IDF v5.5.3
+. $IDF_PATH/export.sh                          # ESP-IDF v5.5.3
 idf.py -p /dev/cu.usbmodemXXXX flash
 
-tools/install-mic-agent.sh     # launchd agent，登录即启
+tools/install-mic-agent.sh                     # launchd agent，登录即启
 ```
+
+先装依赖再跑脚本：脚本自己不装任何东西，只是去找一个已经装好的解释器。而且它只检查
+`bleak`、`sounddevice`、`numpy` 三个 —— 漏掉 `pyautogui` 的话，agent 会欢快地推流，
+但一个字都不会打出来。
 
 然后是三个容易漏掉的设置：
 

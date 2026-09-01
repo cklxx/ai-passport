@@ -33,6 +33,10 @@ import struct
 import sys
 
 MAGIC = 0x51
+# Kept in step with main/island_quota.h: 8 bytes now that a Codex byte is carried,
+# 7 for a sender that predates it.
+ISLAND_LEN = 8
+ISLAND_LEN_V1 = 7
 UNKNOWN = 0xFF
 DEFAULT_EMIT = os.path.expanduser("~/.claude/island_quota.bin")
 
@@ -144,7 +148,7 @@ def cmd_send(args):
     except OSError as e:
         print(f"island: no packet to send: {e}", file=sys.stderr)
         return 1
-    if len(packet) not in (7, 8):
+    if len(packet) not in (ISLAND_LEN_V1, ISLAND_LEN):
         print(f"island: bad packet length {len(packet)}", file=sys.stderr)
         return 1
     try:
@@ -238,7 +242,7 @@ def cmd_recv(args):
         try:
             with open(args.emit, "rb") as f:
                 p = f.read()
-            return p if len(p) == 7 else None
+            return p if len(p) in (ISLAND_LEN_V1, ISLAND_LEN) else None
         except OSError:
             return None
 
@@ -354,7 +358,9 @@ def cmd_recv_ble(args):
     # stream at 16 kHz but the device clocks at 48 kHz, any app reading it hears
     # 3x-speed garbage. Open at the device's native rate and upsample the 16 kHz
     # device audio to match (integer factor, sample-repeat — cheap and clean).
-    RATE = int(round(sd.query_devices()[device]["default_samplerate"]))
+    # query_devices(x) accepts a name or an index; query_devices()[x] only an index,
+    # so the latter crashed on the string argparse hands us for --device.
+    RATE = int(round(sd.query_devices(device)["default_samplerate"]))
     UP = max(1, RATE // SRC_RATE)                 # 48000 // 16000 = 3
 
     dump_frames = []                              # raw 16k PCM, for --dump analysis
@@ -696,7 +702,7 @@ def cmd_recv_ble(args):
                     try:
                         with open(args.emit, "rb") as f:
                             q = f.read()
-                        if len(q) in (7, 8) and q != last_q:
+                        if len(q) in (ISLAND_LEN_V1, ISLAND_LEN) and q != last_q:
                             await client.write_gatt_char(BLE_UUID_CTRL, q, response=False)
                             last_q = q
                     except OSError:
@@ -773,9 +779,15 @@ def cmd_recv_ble(args):
 def cmd_selftest(_args):
     # Round-trip and edge cases must match main/island_quota.c exactly.
     p = pack(30, 1893456000)
-    assert len(p) == 7 and p[0] == MAGIC and p[1] == 30
+    assert len(p) == ISLAND_LEN and p[0] == MAGIC and p[1] == 30
     assert struct.unpack("<I", p[2:6])[0] == 1893456000
-    assert p[6] == (p[0] ^ p[1] ^ p[2] ^ p[3] ^ p[4] ^ p[5])
+    # The wire property, rather than a byte position that moves when a field is
+    # added: main/island_quota.c checks that the XOR of the whole packet is zero.
+    fold = 0
+    for b in p:
+        fold ^= b
+    assert fold == 0
+    assert p[6] == UNKNOWN or 0 <= p[6] <= 100        # Codex byte
     assert pack(None, 0)[1] == UNKNOWN
     assert pack(150, 0)[1] == 100 and pack(-5, 0)[1] == 0   # clamped
     # seven_day extraction

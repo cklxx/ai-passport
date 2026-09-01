@@ -13,6 +13,9 @@ run_static_checks() {
     local test_dir
 
     python3 tools/check_repo.py
+    # The agent's wire-format selftest. It was not run by anything for long enough to
+    # rot: it still asserted the 7-byte quota packet after an 8th byte was added.
+    python3 tools/island_agent.py selftest
 
     actionlint_bin="${ACTIONLINT_BIN:-}"
     if [[ -z "${actionlint_bin}" ]]; then

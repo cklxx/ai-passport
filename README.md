@@ -41,14 +41,19 @@ a button on the card, speak, and text appears at your cursor.
 ## Install
 
 ```sh
-brew install blackhole-2ch
-python3 -m pip install bleak sounddevice numpy pyautogui pyobjc-framework-Cocoa
+brew install blackhole-2ch python@3.11        # bleak needs Python 3.10+
+python3.11 -m pip install bleak sounddevice numpy pyautogui pyobjc-framework-Cocoa
 
-. $IDF_PATH/export.sh          # ESP-IDF v5.5.3
+. $IDF_PATH/export.sh                          # ESP-IDF v5.5.3
 idf.py -p /dev/cu.usbmodemXXXX flash
 
-tools/install-mic-agent.sh     # launchd agent, starts at login
+tools/install-mic-agent.sh                     # launchd agent, starts at login
 ```
+
+Install the packages before running the script: it does not install anything, it
+searches for an interpreter that already has them. It also only checks for
+`bleak`, `sounddevice` and `numpy` — miss `pyautogui` and you get an agent that
+streams audio happily and never types a character.
 
 Then three settings that are easy to miss:
 
