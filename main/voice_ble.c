@@ -119,12 +119,16 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             // tuning these numbers against macOS, the answer is 30 ms either way.
             //
             // What that ceiling means for audio: 30 ms per connection event at
-            // roughly 1.9 notifications per event carries about 63 frames/s, while
-            // 15 ms frames need 66.7. There is no headroom, so an event that passes
-            // nothing cannot be made up — which is the whole of the residual 2-8%
-            // shortfall and the ~90 ms arrival gaps. A 30 ms frame would need 960
-            // bytes, past the 517-byte ATT MTU ceiling, so the frame rate cannot be
-            // lowered either.
+            // roughly 1.9 notifications per event carries about 63 frames/s. The
+            // 15 ms PCM frame needed 66.7 and delivered about half, filling the
+            // mbuf pool with notifications the link would not take.
+            //
+            // The frame rate WAS lowered, by halving the bytes per sample rather
+            // than the samples per frame: 480 mu-law samples is 30 ms of audio in
+            // the same 482-byte packet, needing 33.3 notifications/s. See
+            // voice_ulaw_encode. (A 30 ms PCM frame would indeed need 960 bytes,
+            // past the ATT MTU — which is why this comment used to conclude the
+            // rate could not be lowered at all. Compression was the missing move.)
             struct ble_gap_upd_params up = {
                 .itvl_min = 12,             // 12 * 1.25 ms = 15 ms
                 .itvl_max = 24,             // 24 * 1.25 ms = 30 ms
@@ -323,7 +327,16 @@ bool voice_ble_send_audio(const uint8_t *data, size_t len, uint16_t seq)
     s_audio_mtu = ble_att_mtu(s_conn);
     // A notification spends three ATT bytes on opcode + handle. NimBLE otherwise
     // truncates overlong packets and still reports success.
-    if (s_audio_mtu < 3 || len + 2 > s_audio_mtu - 3) {
+    //
+    // The binding limit is fragmentation, not the MTU. Value V occupies V + 3 ATT
+    // + 4 L2CAP bytes, split across 251-octet link-layer PDUs, and the radio passes
+    // a roughly fixed number of FRAGMENTS per connection event. Crossing into a
+    // third fragment at V + 7 > 502 is what made the 252-sample experiment measure
+    // worse (89% -> 69%) despite sending fewer notifications: it cut notifications
+    // 4.8% and raised fragments 43%. The MTU alone would admit up to 509 and let
+    // that regression back in silently, so the guard is the fragment boundary.
+    // Today's frame is 482, with 13 bytes of headroom.
+    if (s_audio_mtu < 3 || len + 2 > s_audio_mtu - 3 || len + 2 + 7 > 502) {
         s_audio_oversize++;
         return false;
     }

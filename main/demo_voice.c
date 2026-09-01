@@ -215,9 +215,17 @@ static void worker_task(void *arg)
             capturing = false; s_level = 0;
             unsigned ovf = (unsigned)bsp_audio_rx_overflows();
             voice_ble_log_audio_stats();
+            // The overflow count is in I2S DMA descriptors, and one descriptor is
+            // dma_frame_num samples (bsp_audio.c) — NOT one BLE frame. The two
+            // coincided while the BLE frame was also 240 samples, so this divided
+            // by the right thing by accident; at 480 it would report double. This
+            // is the one metric that separates a device-side drop from a link-side
+            // one, which is exactly the ambiguity that misdirected debugging
+            // before, so it divides by the descriptor length explicitly.
+            #define I2S_DESC_MS (240 * 1000 / VOICE_SAMPLE_RATE)   // bsp dma_frame_num
             ESP_LOGI(TAG, "recording STOP %u.%us i2s_ovf=%u (%u%% of frames)",
                      s_elapsed_ms / 1000, s_elapsed_ms % 1000 / 100, ovf,
-                     s_elapsed_ms ? ovf * 100 / (s_elapsed_ms / VOICE_CHUNK_MS) : 0);
+                     s_elapsed_ms ? ovf * 100 / (s_elapsed_ms / I2S_DESC_MS) : 0);
             if (ready) voice_ble_send_ctrl(VOICE_CTRL_STOP);
             if (ready) {
                 // Where the loop's time went, little-endian, milliseconds. The PC

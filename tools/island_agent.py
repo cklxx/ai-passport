@@ -439,6 +439,9 @@ def cmd_recv_ble(args):
     primed = [False]
     qlen = [0]                            # samples queued (deque holds frames)
     last = [0]
+    # Most recent output block, kept so a dry callback can mirror real audio rather
+    # than hold a DC level. See the repair in cb().
+    tail = [np.empty(0, dtype=np.int16)]
     stats = {"under": 0, "trim": 0, "stretch": 0, "lo": 10 ** 9,
              "in": 0, "t0": 0.0, "t1": 0.0,
              # Link loss, from the frame sequence: total frames missing, how many
@@ -450,7 +453,7 @@ def cmd_recv_ble(args):
              "t_rx1": 0.0,      # first frame received
              "t_audible": 0.0,  # first real sample handed to the output device
              "t_release": 0.0,  # key released
-             # Arrival-interval jitter: the device sends every 15 ms, so the spread
+             # Arrival-interval jitter: the device sends every 30 ms, so the spread
              # of gaps here is the link's jitter. No clock reconciliation needed.
              "gap_max": 0.0, "gap_prev": 0.0}
 
@@ -494,7 +497,7 @@ def cmd_recv_ble(args):
     # THAT WERE NEVER RECEIVED, so the received-minus-emitted deficit can never be
     # repaid and the queue's water level becomes a reflecting barrier at zero:
     # once drained it stays drained, and every arrival jitter is another hole. The
-    # queue is a random walk with a +/-240-sample arrival quantum against a drift
+    # queue is a random walk with a one-frame arrival quantum against a drift
     # of only ~2 samples per callback, so zero is the attractor from ANY prebuffer
     # depth — which is why raising PREBUF from 200 ms to 350 ms made underruns
     # WORSE (35 -> 74), not better.
@@ -508,9 +511,9 @@ def cmd_recv_ble(args):
     # while the queue is below one frame, and when got == need the index map is
     # bit-identical to np.repeat(src, UP), so the nominal path is unchanged.
     # How few source samples one output block may be built from. The first attempt
-    # capped the give-back at 30 samples (240 -> 210), which never fired: the
-    # measured low-water mark is 15 ms — exactly one frame — so the queue is either
-    # at 240 (nominal path) or empty (got == 0), and the 210..239 window is never
+    # capped the give-back at 30 samples, which never fired: the measured low-water
+    # mark is one whole frame, so the queue is either at a frame boundary (nominal
+    # path) or empty (got == 0), and the partial window in between is never
     # visited. Allowing a block to be built from as little as a third of a frame
     # means a partially-filled queue gets stretched instead of counted as a hole.
     # A block may be built from as little as one frame's remainder; below that the
@@ -551,21 +554,35 @@ def cmd_recv_ble(args):
             stats["lo"] = qlen[0]         # sampled post-consumption: the real dip
         if got == 0:
             # Dry queue. Elastic take never engages here: BLE delivers one whole
-            # 240-sample frame per notify and the callback consumes exactly 240,
-            # so qlen is always a multiple of a frame — the 1..239 partial state
-            # the stretch path was written for does not exist.
+            # frame per notify and the callback consumes exactly one, so qlen is
+            # always a multiple of a frame — the partial state the stretch path was
+            # written for does not exist.
             #
             # So repair from history instead of from a single sample: replay the
             # tail of the audio already sent, reversed, which continues the
             # waveform's own spectrum. Holding one sample emits a DC step that a
-            # streaming ASR's 25 ms analysis frames read as an artefact; a mirrored
-            # tail keeps the signal in the same band and is inaudible at 15 ms.
-            out[:] = last[0]
+            # streaming ASR's 25 ms analysis frames read as an artefact, and at a
+            # 30 ms frame such a hole now spans a whole analysis window rather than
+            # only touching several — so the window would be pure artefact.
+            #
+            # This is what the comment above has always described; the code held a
+            # sample instead. Reversing keeps the samples real (nothing is invented,
+            # only reordered) and the join is continuous because the mirror starts
+            # at the same sample the hold would have repeated.
+            n = min(len(tail[0]), frames)
+            if n:
+                out[:n] = np.repeat(tail[0][-1:-n - 1:-1][:, None], out.shape[1], axis=1)
+                if n < frames:
+                    out[n:] = last[0]
+            else:
+                out[:] = last[0]
             stats["under"] += 1
             return
         if got < need:
             stats["stretch"] += 1         # not an underrun: no sample invented
         last[0] = int(src[got - 1])
+        # Keep the most recent output as the mirror source for the next dry block.
+        tail[0] = np.repeat(src, UP)[-BLOCK:]
         # Integer index map: stretches `got` samples over `frames` outputs. With
         # got == need this reduces exactly to a UP-fold sample repeat.
         idx = idx0[:frames] if got == need and frames == BLOCK else (np.arange(frames) * got) // frames
@@ -721,10 +738,10 @@ def cmd_recv_ble(args):
                 # Close the output gate before the finalize wait. The stream is
                 # never stopped, so without this the callback keeps running on an
                 # empty queue and the dry-repair path replays the same reversed
-                # 15 ms block over and over — a -25 dBFS drone fed to 豆包 for the
+                # block over and over — a -25 dBFS drone fed to 豆包 for the
                 # whole wait, while the key is still held. Those callbacks were
                 # also counted against the session, which is the entire source of
-                # the constant ~34 "underruns" (0.51 s of tail / 15 ms).
+                # the constant "underruns" counted across the tail.
                 # Let the output stream play out what it already holds before
                 # closing the gate. Closing immediately after the drain loop cut the
                 # last frames — the queue being empty does not mean the audio has
@@ -986,6 +1003,25 @@ def cmd_selftest(_args):
     assert table[0xFF] == 0                       # silence stays silent
     assert table[0x80] > 0 and table[0x00] < 0    # sign survives
     assert len(set(table.tolist())) == 255        # +0 and -0 collide; nothing else
+
+    # Dry-queue repair: mirror the tail rather than hold a sample. A DC hold spans a
+    # whole 25 ms ASR analysis window at a 30 ms frame, which is pure artefact; the
+    # mirror reorders real samples and joins continuously.
+    tail = numpy.arange(1, 13, dtype=numpy.int16)
+    frames = 6
+    out = numpy.zeros((frames, 1), dtype=numpy.int16)
+    n = min(len(tail), frames)
+    out[:n] = numpy.repeat(tail[-1:-n - 1:-1][:, None], 1, axis=1)
+    assert out[0, 0] == tail[-1], "join must be continuous with the last sample"
+    assert list(out[:, 0]) == [12, 11, 10, 9, 8, 7], list(out[:, 0])
+    assert set(out[:, 0].tolist()) <= set(tail.tolist()), "invents no sample"
+    # Shorter tail than the block: the remainder falls back to the held sample.
+    short, frames = numpy.array([5, 6], dtype=numpy.int16), 4
+    out = numpy.zeros((frames, 1), dtype=numpy.int16)
+    n = min(len(short), frames)
+    out[:n] = numpy.repeat(short[-1:-n - 1:-1][:, None], 1, axis=1)
+    out[n:] = 6
+    assert list(out[:, 0]) == [6, 5, 6, 6], list(out[:, 0])
     print("island_agent selftest: PASS")
     return 0
 
