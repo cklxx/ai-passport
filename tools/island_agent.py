@@ -449,7 +449,12 @@ def cmd_recv_ble(args):
     # incremental output — though that change also reordered the key press, so the
     # cause was never isolated. lowater reads 0 ms every session, meaning the cushion
     # is not being used defensively, which is where the room to trade comes from.
-    PREBUF = int(0.10 * SRC_RATE)
+    # Fixed at 100 ms. An adaptive cushion sized from the previous session's worst
+    # arrival gap was tried and reverted: the shortfall is not jitter but a steady
+    # rate deficit — with the host idle the rate is still ~82%, meaning frames are
+    # never produced rather than arriving late — and no amount of buffering supplies
+    # a sample that was not sent. It cost 100 ms of first-word latency for no gain.
+    prebuf = [int(0.10 * SRC_RATE)]
     MAXBUF = int(0.80 * SRC_RATE)         # 800 ms ceiling on added latency
 
     # Elastic consumption. Holding the last sample on a shortfall EMITS SAMPLES
@@ -487,7 +492,7 @@ def cmd_recv_ble(args):
     def cb(out, frames, _t, _status):
         need = -(-frames // UP)
         if not primed[0]:
-            if qlen[0] >= PREBUF:
+            if qlen[0] >= prebuf[0]:
                 primed[0] = True
                 if stats["t_audible"] == 0.0:
                     stats["t_audible"] = time.monotonic()
@@ -701,6 +706,7 @@ def cmd_recv_ble(args):
                       f"stop->release={ms(stats['t1'], stats['t_release'])} "
                       f"gapmax={stats['gap_max'] * 1000:.0f}ms "
                       f"load={os.getloadavg()[0]:.1f} busiest={_busiest_pct():.0f}% "
+                      f"prebuf={prebuf[0] * 1000 // SRC_RATE}ms "
                       f"| lost={stats['lost']}f in {stats['bursts']} gaps "
                       f"(worst {stats['worst']}f) "
                       f"{stats['lost']*100.0/max(1, stats['lost'] + stats['in']//240):.1f}%",
