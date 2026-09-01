@@ -79,6 +79,7 @@ static unsigned s_lvl_tick;              // worker-only: frames since the last R
 #define VOICE_SILENCE_TICKS 50           // 50 * 60 ms = 3.0 s of quiet ends the take
 static unsigned s_quiet_ticks;           // worker-only: consecutive quiet RMS ticks
 static bool s_backlog;                   // worker-only: holds one unsent frame
+static unsigned s_spin;                  // worker-only: consecutive non-blocking waits
 static int32_t s_hp_x, s_hp_y;           // worker-only: high-pass filter state
 static uint64_t s_read_us, s_send_us, s_retry_us;
 // Press-to-first-frame, in microseconds. Both stamps come from esp_timer on this
@@ -223,7 +224,18 @@ static void worker_task(void *arg)
                 // arrive — in which case the take returns immediately and this
                 // becomes a busy loop that starves the LVGL task below it (the
                 // on-screen timer stopped advancing for seconds at a time).
-                if (voice_ble_wait_tx(20)) vTaskDelay(1);
+                // Wait for the controller to free an mbuf. The yield below is
+                // deliberate but must not be unconditional: giving up a tick after
+                // every successful wait added 1 ms to each of ~66 frames a second,
+                // about 6% of the budget, and the delivered rate fell from 96-99%
+                // to 87%. Yield only when the wait itself did not block, since that
+                // is the case where the loop would otherwise spin without ever
+                // letting the LVGL task at priority 4 run.
+                if (voice_ble_wait_tx(20)) {
+                    if (++s_spin >= 8) { s_spin = 0; vTaskDelay(1); }
+                } else {
+                    s_spin = 0;             // the wait blocked; the core was shared
+                }
                 s_retry_us += esp_timer_get_time() - t0;
                 continue;
             }
