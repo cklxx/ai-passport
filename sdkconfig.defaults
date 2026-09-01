@@ -138,3 +138,11 @@ CONFIG_BUTTON_LONG_PRESS_TIME_MS=800
 # ~24 frames, covering a 360 ms controller stall. Cost is 48*256 = 12 KB of RAM,
 # affordable next to the ~400 KB on this part.
 CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=48
+
+# Deliberately NOT raising the BLE buffer pools. Doing so was tried and reverted:
+# CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT at 60 took ENOMEM refusals from 841 to
+# 0, but the delivered rate fell from 86-90% to 51-61% because the bottleneck moved
+# instead of clearing — msys dry allocations went 52 -> 594 and I2S overflow 22 -> 167.
+# Bigger send queues let the worker commit more frames before it blocks, which means
+# longer spent not reading I2S, and the capture ring pays for it. The refusals are the
+# link telling the worker to slow down; absorbing them just moves the loss upstream.

@@ -269,6 +269,17 @@ bool voice_ble_ready(void)
     return s_running && s_conn != BLE_HS_CONN_HANDLE_NONE;
 }
 
+void voice_ble_audio_stats(unsigned *attempts, unsigned *accepted,
+                           unsigned *alloc_fail, unsigned *notify_fail,
+                           int *last_rc)
+{
+    if (attempts)    *attempts    = s_audio_attempts;
+    if (accepted)    *accepted    = s_audio_accepted;
+    if (alloc_fail)  *alloc_fail  = s_audio_alloc_fail;
+    if (notify_fail) *notify_fail = s_audio_notify_fail;
+    if (last_rc)     *last_rc     = s_audio_last_rc;
+}
+
 bool voice_ble_wait_tx(uint32_t timeout_ms)
 {
     if (s_tx_done == NULL) return false;

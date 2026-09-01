@@ -190,12 +190,6 @@ static void worker_task(void *arg)
             capturing = false; s_level = 0;
             s_backlog = false;              // nothing from this take may follow STOP
             unsigned ovf = (unsigned)bsp_audio_rx_overflows();
-            ESP_LOGI(TAG, "timing: first_frame=%lluus wall=%lldus read=%lluus "
-                     "send=%lluus retry=%lluus",
-                     (unsigned long long)s_first_frame_us,
-                     (long long)(esp_timer_get_time() - s_record_start_us),
-                     (unsigned long long)s_read_us, (unsigned long long)s_send_us,
-                     (unsigned long long)s_retry_us);
             voice_ble_log_audio_stats();
             ESP_LOGI(TAG, "recording STOP %u.%us i2s_ovf=%u (%u%% of frames)",
                      s_elapsed_ms / 1000, s_elapsed_ms % 1000 / 100, ovf,
@@ -208,12 +202,20 @@ static void worker_task(void *arg)
                 // device-side shortfall from a delivery one — and needing USB serial
                 // to read it meant it was unavailable exactly when the device was in
                 // real use.
-                uint16_t st16[5] = {
+                unsigned att = 0, acc = 0, af = 0, nf = 0;
+                int lrc = 0;
+                voice_ble_audio_stats(&att, &acc, &af, &nf, &lrc);
+                uint16_t st16[10] = {
                     (uint16_t)(ovf > 0xFFFF ? 0xFFFF : ovf),
                     (uint16_t)(s_first_frame_us / 1000),
                     (uint16_t)(s_read_us / 1000),
                     (uint16_t)(s_send_us / 1000),
                     (uint16_t)(s_retry_us / 1000),
+                    (uint16_t)(att > 0xFFFF ? 0xFFFF : att),
+                    (uint16_t)(acc > 0xFFFF ? 0xFFFF : acc),
+                    (uint16_t)(af > 0xFFFF ? 0xFFFF : af),
+                    (uint16_t)(nf > 0xFFFF ? 0xFFFF : nf),
+                    (uint16_t)(lrc < 0 ? (unsigned)(-lrc) | 0x8000 : lrc),
                 };
                 uint8_t buf[1 + sizeof(st16)];
                 buf[0] = VOICE_CTRL_STATS;

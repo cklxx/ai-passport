@@ -34,6 +34,14 @@ bool voice_ble_send_audio(const uint8_t *data, size_t len, uint16_t seq);
 // receiver's loss figures are per-session.
 void voice_ble_reset_audio_seq(void);
 
+// Why audio notifications did not go out. alloc_fail means the mbuf pool was dry,
+// notify_fail means the host stack refused the queued notification and last_rc says
+// why. Distinguishing those is the difference between "add buffers" and "the link
+// cannot take it".
+void voice_ble_audio_stats(unsigned *attempts, unsigned *accepted,
+                           unsigned *alloc_fail, unsigned *notify_fail,
+                           int *last_rc);
+
 // Block until a notification completes, meaning the mbuf pool can supply a buffer
 // again, or until the timeout. Polling for a free mbuf instead measured 7.7 s of
 // spin in a 9.4 s session and made frame delivery bursty; an mbuf only returns when

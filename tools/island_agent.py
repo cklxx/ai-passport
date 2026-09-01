@@ -613,16 +613,21 @@ def cmd_recv_ble(args):
             return
         raw = bytes(data)
         code = raw[0]
-        if code == 6 and len(raw) >= 11:      # VOICE_CTRL_STATS
-            ovf, first_ms, read_ms, send_ms, retry_ms = struct.unpack(
-                "<5H", raw[1:11])
+        if code == 6 and len(raw) >= 21:      # VOICE_CTRL_STATS
+            (ovf, first_ms, read_ms, send_ms, retry_ms,
+             att, acc, alloc_fail, notify_fail, rc) = struct.unpack("<10H", raw[1:21])
+            rc = -(rc & 0x7FFF) if rc & 0x8000 else rc
             # Printed next to the host-side figures because that pairing is what
             # separates "the device never produced the frames" from "they arrived
             # late". retry dominating means the sender is waiting on the BLE pool;
             # ovf means capture is being dropped before it is ever sent.
+            # attempts vs accepted says how many frames the worker even tried to
+            # send; alloc_fail means the mbuf pool was dry and notify_fail means the
+            # host stack refused a queued notification. Those want opposite fixes.
             print(f"island: device read={read_ms}ms send={send_ms}ms "
-                  f"retry={retry_ms}ms first_frame={first_ms}ms i2s_ovf={ovf}",
-                  file=sys.stderr)
+                  f"retry={retry_ms}ms first_frame={first_ms}ms i2s_ovf={ovf} "
+                  f"tried={att} sent={acc} pool_dry={alloc_fail} "
+                  f"refused={notify_fail} rc={rc}", file=sys.stderr)
             return
         if code == 3:                     # VOICE_CTRL_START
             sessions[0] += 1              # invalidate any drain still sleeping
