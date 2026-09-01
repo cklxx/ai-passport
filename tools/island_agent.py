@@ -442,7 +442,7 @@ def cmd_recv_ble(args):
     # Most recent output block, kept so a dry callback can mirror real audio rather
     # than hold a DC level. See the repair in cb().
     tail = [np.empty(0, dtype=np.int16)]
-    stats = {"under": 0, "trim": 0, "stretch": 0, "lo": 10 ** 9,
+    stats = {"under": 0, "tail_under": 0, "trim": 0, "stretch": 0, "lo": 10 ** 9,
              "in": 0, "t0": 0.0, "t1": 0.0,
              # Link loss, from the frame sequence: total frames missing, how many
              # separate gaps they came in, and the longest single gap. A few long
@@ -550,7 +550,14 @@ def cmd_recv_ble(args):
             qlen[0] -= n
             if n < len(f):
                 q.appendleft(f[n:])
-        if qlen[0] < stats["lo"]:
+        # Only sample the low-water mark on callbacks that consumed real audio.
+        # This used to sample unconditionally, which made the statistic useless: the
+        # dry tail after STOP runs several callbacks with an empty queue, all before
+        # the session-end print, so lowater read 0 ms in EVERY session — the
+        # zero-loss ones and the 16%-loss ones alike. A number that is identical
+        # under both is measuring nothing, and it was cited repeatedly as evidence
+        # that the prebuffer cushion goes untouched.
+        if got and qlen[0] < stats["lo"]:
             stats["lo"] = qlen[0]         # sampled post-consumption: the real dip
         if got == 0:
             # Dry queue. Elastic take never engages here: BLE delivers one whole
@@ -576,7 +583,12 @@ def cmd_recv_ble(args):
                     out[n:] = last[0]
             else:
                 out[:] = last[0]
-            stats["under"] += 1
+            # Starvation before STOP is a defect; after STOP it is just the queue
+            # running out, which is what a finished take is supposed to do. Counting
+            # both as "underrun" put a constant 5-11 on every session, including the
+            # perfect ones, and buried the only number that would show real
+            # starvation.
+            stats["tail_under" if stats["t1"] else "under"] += 1
             return
         if got < need:
             stats["stretch"] += 1         # not an underrun: no sample invented
@@ -693,6 +705,12 @@ def cmd_recv_ble(args):
             stats["t0"] = time.monotonic()
             q.clear(); qlen[0] = 0; primed[0] = False
             stats["under"] = stats["trim"] = stats["stretch"] = stats["in"] = 0
+            # t1 marks the STOP, and the dry-block repair reads it to decide whether
+            # a starved callback is mid-session or just the tail draining. Leaving
+            # the previous session's stamp here would file every underrun of this
+            # one under the tail.
+            stats["tail_under"] = 0
+            stats["t1"] = 0.0
             stats["lo"] = 10 ** 9
             stats["seq"] = None
             stats["lost"] = stats["bursts"] = stats["worst"] = 0
@@ -777,7 +795,8 @@ def cmd_recv_ble(args):
                 lo = 0 if stats["lo"] > 10 ** 8 else stats["lo"]
                 print(f"island: session end {el:.1f}s in={stats['in']} "
                       f"({rate:.0f} Hz = {rate/SRC_RATE*100:.0f}% of 16k) "
-                      f"underrun={stats['under']} stretch={stats['stretch']} "
+                      f"underrun={stats['under']} tail={stats['tail_under']} "
+                      f"stretch={stats['stretch']} "
                       f"trim={stats['trim']} lowater={lo/SRC_RATE*1000:.0f}ms "
                       f"| arm->rx1={ms(stats['t_arm'], stats['t_rx1'])} "
                       f"rx1->audible={ms(stats['t_rx1'], stats['t_audible'])} "
