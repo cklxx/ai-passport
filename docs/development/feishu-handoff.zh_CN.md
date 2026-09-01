@@ -8,9 +8,9 @@
 
 ## 工作区与设备
 
-- 仓库：`/Users/bytedance/code/ai-passport`
+- 仓库：`<repo>`
 - 分支：`feature/feishu-messenger-safe`
-- ESP-IDF：`/Users/bytedance/esp/esp-idf-v5.5.3`
+- ESP-IDF：`$IDF_PATH`
 - 设备串口：`/dev/cu.usbmodem2101`
 - 芯片：ESP32-C3，8 MB Flash，无 PSRAM
 - 应用分区上限：3 MiB（`0x300000`）
@@ -58,7 +58,7 @@ HTTP 状态和队列等待日志确认。
 1. 只打开 monitor，不刷机：
 
    ```bash
-   source /Users/bytedance/esp/esp-idf-v5.5.3/export.sh
+   source $IDF_PATH/export.sh
    idf.py -B build-dev -p /dev/cu.usbmodem2101 monitor
    ```
 

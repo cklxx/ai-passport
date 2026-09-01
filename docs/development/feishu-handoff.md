@@ -9,9 +9,9 @@ release.
 
 ## Workspace and device
 
-- Repository: `/Users/bytedance/code/ai-passport`
+- Repository: `<repo>`
 - Branch: `feature/feishu-messenger-safe`
-- ESP-IDF: `/Users/bytedance/esp/esp-idf-v5.5.3`
+- ESP-IDF: `$IDF_PATH`
 - Device port: `/dev/cu.usbmodem2101`
 - Target: ESP32-C3, 8 MB Flash, no PSRAM
 - Application partition limit: 3 MiB (`0x300000`)
@@ -70,7 +70,7 @@ sequence, HTTP-status, and queue-wait logs before changing behavior.
 1. Start the monitor without flashing:
 
    ```bash
-   source /Users/bytedance/esp/esp-idf-v5.5.3/export.sh
+   source $IDF_PATH/export.sh
    idf.py -B build-dev -p /dev/cu.usbmodem2101 monitor
    ```
 
