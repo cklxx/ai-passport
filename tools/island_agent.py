@@ -292,6 +292,32 @@ BLE_UUID_AUDIO = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 BLE_UUID_CTRL = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 
 
+def _busiest_pct():
+    """CPU share of the busiest single process, or 0 if it cannot be read.
+
+    The load average alone does not distinguish the cases that matter: it read about
+    6.5 both while a VPN system extension held 188% of a core, with the delivered
+    audio rate at 40%, and after it fell to 12%, with the rate back at 90%.
+    CoreBluetooth's delivery thread competes with whatever is monopolising a core,
+    not with the machine's average.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(["ps", "-Aceo", "%cpu"], capture_output=True, text=True,
+                             timeout=2.0).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    top = 0.0
+    for line in out.splitlines()[1:]:
+        try:
+            v = float(line)
+        except ValueError:
+            continue
+        if v > top:
+            top = v
+    return top
+
+
 def _read_quota(path):
     """Read the quota packet from disk. Called off the event loop: a synchronous
     read on the loop that dispatches BLE notifications stalls the audio stream."""
@@ -674,7 +700,7 @@ def cmd_recv_ble(args):
                       f"rx1->audible={ms(stats['t_rx1'], stats['t_audible'])} "
                       f"stop->release={ms(stats['t1'], stats['t_release'])} "
                       f"gapmax={stats['gap_max'] * 1000:.0f}ms "
-                      f"load={os.getloadavg()[0]:.1f} "
+                      f"load={os.getloadavg()[0]:.1f} busiest={_busiest_pct():.0f}% "
                       f"| lost={stats['lost']}f in {stats['bursts']} gaps "
                       f"(worst {stats['worst']}f) "
                       f"{stats['lost']*100.0/max(1, stats['lost'] + stats['in']//240):.1f}%",
