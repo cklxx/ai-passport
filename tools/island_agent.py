@@ -674,6 +674,7 @@ def cmd_recv_ble(args):
                       f"rx1->audible={ms(stats['t_rx1'], stats['t_audible'])} "
                       f"stop->release={ms(stats['t1'], stats['t_release'])} "
                       f"gapmax={stats['gap_max'] * 1000:.0f}ms "
+                      f"load={os.getloadavg()[0]:.1f} "
                       f"| lost={stats['lost']}f in {stats['bursts']} gaps "
                       f"(worst {stats['worst']}f) "
                       f"{stats['lost']*100.0/max(1, stats['lost'] + stats['in']//240):.1f}%",
