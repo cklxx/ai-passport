@@ -202,7 +202,6 @@ static void worker_task(void *arg)
                      (s_elapsed_ms / (VOICE_CHUNK_SAMPLES * 1000 / VOICE_SAMPLE_RATE)) : 0);
             if (ready) voice_ble_send_ctrl(VOICE_CTRL_STOP);
             set_state(ready ? ST_IDLE : ST_CONNECTING);
-            continue;                       // do not capture or notify past STOP
         } else if (!capturing) {
             set_state(ready ? ST_IDLE : ST_CONNECTING);
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -218,7 +217,13 @@ static void worker_task(void *arg)
                 // mbuf only frees when a connection event finishes (~15 ms), so
                 // polling every tick burned 83% of the session in retries and made
                 // delivery arrive in bursts.
-                voice_ble_wait_tx(20);
+                // Wait for the controller to free an mbuf, but always yield at
+                // least one tick. The semaphore is binary and given on every
+                // notification completion, so it can already be signalled when we
+                // arrive — in which case the take returns immediately and this
+                // becomes a busy loop that starves the LVGL task below it (the
+                // on-screen timer stopped advancing for seconds at a time).
+                if (voice_ble_wait_tx(20)) vTaskDelay(1);
                 s_retry_us += esp_timer_get_time() - t0;
                 continue;
             }

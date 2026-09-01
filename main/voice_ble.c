@@ -101,11 +101,35 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "connected");
             // Request the fastest connection interval (7.5 ms) for low audio
             // latency. The central (macOS) may negotiate slower; that's fine.
+            // Apple's QA1931 rules for accessory connection parameters, which
+            // macOS enforces by rejecting anything non-compliant:
+            //   Interval Min >= 15 ms and a multiple of 15 ms
+            //   Interval Min + 15 ms <= Interval Max
+            //   Interval Max * (latency + 1) * 3 < supervision timeout
+            //   2 s <= supervision timeout <= 6 s
+            // The previous request was min == max == 7.5 ms, which breaks the first
+            // two, and it was refused outright (rc=554) — leaving the link on
+            // whatever macOS chose, measured at 30 ms.
+            //
+            // 15/30 ms is the fastest compliant pair — and macOS refuses this too,
+            // with the same rc=554. It sets 30 ms itself at connection time, about
+            // 90 ms before this request is even made, and does not entertain a
+            // peripheral's opinion. The request is left in place because it costs
+            // nothing and a different central may honour it; do not spend time
+            // tuning these numbers against macOS, the answer is 30 ms either way.
+            //
+            // What that ceiling means for audio: 30 ms per connection event at
+            // roughly 1.9 notifications per event carries about 63 frames/s, while
+            // 15 ms frames need 66.7. There is no headroom, so an event that passes
+            // nothing cannot be made up — which is the whole of the residual 2-8%
+            // shortfall and the ~90 ms arrival gaps. A 30 ms frame would need 960
+            // bytes, past the 517-byte ATT MTU ceiling, so the frame rate cannot be
+            // lowered either.
             struct ble_gap_upd_params up = {
-                .itvl_min = 6,   // 6 * 1.25 ms = 7.5 ms
-                .itvl_max = 6,
-                .latency = 0,
-                .supervision_timeout = 200,   // 2 s
+                .itvl_min = 12,             // 12 * 1.25 ms = 15 ms
+                .itvl_max = 24,             // 24 * 1.25 ms = 30 ms
+                .latency = 0,               // every event serviced; audio needs it
+                .supervision_timeout = 400, // 4 s, inside the 2-6 s window
             };
             ble_gap_update_params(s_conn, &up);
         } else {
