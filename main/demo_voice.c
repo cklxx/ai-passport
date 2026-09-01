@@ -76,7 +76,8 @@ static volatile unsigned s_elapsed_ms;
 static volatile int s_level;
 static unsigned s_lvl_tick;              // worker-only: frames since the last RMS
 #define VOICE_SILENCE_LEVEL 10           // below this the smoothed level reads quiet
-#define VOICE_SILENCE_TICKS 50           // 50 * 60 ms = 3.0 s of quiet ends the take
+#define VOICE_SILENCE_TICKS 50           // 50 * 60 ms = 3.0 s of quiet ends a take
+static bool s_backlog;                   // worker-only: one frame awaiting a retry
 static unsigned s_quiet_ticks;           // worker-only: consecutive quiet RMS ticks
 static int32_t s_hp_x, s_hp_y;           // worker-only: high-pass filter state
 static uint64_t s_read_us, s_send_us, s_retry_us;
@@ -129,6 +130,9 @@ static void worker_task(void *arg)
 {
     (void)arg;
     static int16_t pcm[VOICE_CHUNK_SAMPLES];
+    static int16_t backlog[VOICE_CHUNK_SAMPLES];   // one frame awaiting one retry
+    uint16_t backlog_seq = 0;                      // valid only while s_backlog
+    s_backlog = false;
     bool capturing = false;
 
     if (voice_ble_start() != ESP_OK) {
@@ -230,20 +234,19 @@ static void worker_task(void *arg)
 
         // Preserve one rejected frame, but retry it before capturing another one.
         // This deliberately applies BLE backpressure to capture rather than using a queue.
-        // No retry slot, no waiting. The worker used to hold a rejected frame and
-        // block until the BLE pool freed one, and that is what cost the audio: a
-        // session measured tried=1098 sent=128 retry=8741ms i2s_ovf=167 — while it
-        // waited it was not reading I2S, so the capture ring overflowed and lost
-        // whole runs of frames. Deepening the ring helped; deepening the BLE buffers
-        // made it worse (rate 86% -> 51%) because a longer queue meant longer spent
-        // not reading.
-        //
-        // So obey the backpressure instead of resisting it: if the link will not take
-        // a frame, drop that frame and go straight back to capture. One dropped frame
-        // is 15 ms of audio; blocking to save it costs a run of frames to ISR
-        // overwrite, which is strictly worse. The receiver already tolerates a single
-        // missing frame — sequence numbers make it visible, and 15 ms is below what a
-        // streaming recogniser reacts to.
+        // One retry, then let it go. Two extremes were both worse than this middle:
+        // holding a frame and blocking until the pool freed a buffer starved I2S and
+        // cost runs of frames to ISR overwrite (retry 8.7 s of a 9.4 s take), while
+        // dropping every refused frame outright pushed measured loss from ~0 to
+        // 12-25% and the user reported recognition getting worse. So keep one frame
+        // for one attempt on the next pass — that covers a momentarily dry pool,
+        // which is the common case — and discard it if the second attempt fails
+        // rather than waiting. Leaving headroom beats filling every slot.
+        if (s_backlog) {
+            (void)voice_ble_send_audio((const uint8_t *)backlog, sizeof(backlog),
+                                       backlog_seq);
+            s_backlog = false;          // sent or not, this frame's turn is over
+        }
         int64_t t0 = esp_timer_get_time();
         if (bsp_audio_read(pcm, sizeof(pcm)) != ESP_OK) {
             s_read_us += esp_timer_get_time() - t0;
@@ -314,8 +317,11 @@ static void worker_task(void *arg)
             s_first_frame_us = esp_timer_get_time() - s_record_start_us;
         }
         s_send_us += esp_timer_get_time() - t0;
-        // Nothing is stashed on failure: the frame is gone and the loop continues
-        // straight to the next capture. See the note above the read.
+        if (!ok) {
+            memcpy(backlog, pcm, sizeof(pcm));
+            backlog_seq = seq;
+            s_backlog = true;           // one retry at the top of the next pass
+        }
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_tx_frames++;
         if (ok) s_tx_ok++;

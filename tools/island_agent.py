@@ -432,7 +432,11 @@ def cmd_recv_ble(args):
 
     # Counted in samples, not frames: the device's frame size is sized to the BLE
     # connection interval and may change, but the latency budget should not.
-    BLOCK = 240 * UP                      # 15 ms out = one source frame
+    # Device frame size, and the output block that carries exactly one of them. Kept
+    # as one constant: it appears in the block size and the resample index map, and a
+    # mismatch between those silently distorts the audio rather than failing.
+    FRAME = 240                           # see VOICE_CHUNK_SAMPLES in demo_voice.c
+    BLOCK = FRAME * UP                    # 15 ms out = one source frame
     # 150 ms. This used to be the only defence against starvation, so it had been
     # pushed to 350 ms — which cost 200 ms of response time and did not even work
     # (see the elastic-consumption note in cb(): PREBUF is just the walk's initial
@@ -449,12 +453,16 @@ def cmd_recv_ble(args):
     # incremental output — though that change also reordered the key press, so the
     # cause was never isolated. lowater reads 0 ms every session, meaning the cushion
     # is not being used defensively, which is where the room to trade comes from.
-    # Fixed at 100 ms. An adaptive cushion sized from the previous session's worst
+    # Fixed at 160 ms — a balance, not a minimum. 100 ms measured fine on every
+    # counter yet lost the first word: 豆包 is not consuming the instant its key goes
+    # down, and arrival jitter alone measures 85-177 ms. 350 ms was also tried and is
+    # too much, delaying the first word visibly. An adaptive cushion sized from the
+    # previous session's worst
     # arrival gap was tried and reverted: the shortfall is not jitter but a steady
     # rate deficit — with the host idle the rate is still ~82%, meaning frames are
     # never produced rather than arriving late — and no amount of buffering supplies
     # a sample that was not sent. It cost 100 ms of first-word latency for no gain.
-    prebuf = [int(0.10 * SRC_RATE)]
+    prebuf = [int(0.16 * SRC_RATE)]
     MAXBUF = int(0.80 * SRC_RATE)         # 800 ms ceiling on added latency
 
     # Elastic consumption. Holding the last sample on a shortfall EMITS SAMPLES
@@ -483,7 +491,7 @@ def cmd_recv_ble(args):
     # A block may be built from as little as one frame's remainder; below that the
     # queue is genuinely dry and there is nothing to stretch.
 
-    idx0 = (np.arange(BLOCK) * 240) // BLOCK      # precomputed nominal index map
+    idx0 = (np.arange(BLOCK) * FRAME) // BLOCK    # precomputed nominal index map
 
     def ms(a, b):
         """One span, in milliseconds, or '-' if either end was never stamped."""
@@ -668,14 +676,14 @@ def cmd_recv_ble(args):
             def release():
                 if sessions[0] == gen:
                     hold_key(False)
-            threading.Timer(0.6, release).start()   # backstop; drain releases sooner
+            threading.Timer(0.75, release).start()   # backstop; drain releases sooner
 
             def drain():
                 # Drain what is queued, but do not wait long: the queue holds at
                 # most MAXBUF of audio and the old 2 s ceiling meant a stall at the
                 # end of a take delayed the release by seconds, which the user feels
                 # as "the last words take forever to appear".
-                for _ in range(8):        # up to 80 ms
+                for _ in range(10):       # up to 100 ms
                     if not q:
                         break
                     time.sleep(0.01)
@@ -698,7 +706,7 @@ def cmd_recv_ble(args):
                 # 豆包 revises the tail of an utterance after the audio ends, so
                 # this wait is not dead time — releasing early commits a rough first
                 # pass instead of the corrected text.
-                time.sleep(0.25)
+                time.sleep(0.33)
                 # Only now close the gate. The order matters: this used to run before
                 # the hold above, so the stream was gated for the whole 450 ms while
                 # 豆包 was still listening and revising, and it revised against silence.
