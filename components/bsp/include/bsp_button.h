@@ -17,6 +17,8 @@ typedef enum {
     BSP_BTN_CLICK,       // 单击(按下并抬起)
     BSP_BTN_DOUBLE,      // 双击
     BSP_BTN_LONG,        // 长按
+    BSP_BTN_HOLD,        // 长按期间的周期心跳。要区分「按住 1 秒」和「按住 3 秒」
+                         // 只能靠它:组件对一次按住只发一次 LONG。
     BSP_BTN_RELEASE,     // 抬起瞬间。长按类操作靠它收尾:按住期间持续做,松手即停
 } bsp_btn_ev_t;
 

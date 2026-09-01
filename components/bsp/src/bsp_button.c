@@ -37,6 +37,7 @@ static void cb_press (void *a, void *u) { on_event(a, u, BSP_BTN_PRESS);  }
 static void cb_click (void *a, void *u) { on_event(a, u, BSP_BTN_CLICK);  }
 static void cb_double(void *a, void *u) { on_event(a, u, BSP_BTN_DOUBLE); }
 static void cb_long  (void *a, void *u) { on_event(a, u, BSP_BTN_LONG);   }
+static void cb_hold  (void *a, void *u) { on_event(a, u, BSP_BTN_HOLD);   }
 static void cb_up    (void *a, void *u) { on_event(a, u, BSP_BTN_RELEASE);}
 
 esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
@@ -73,6 +74,9 @@ esp_err_t bsp_button_init(bsp_btn_cb_t cb, void *user) {
         iot_button_register_cb(s_btn[i], BUTTON_SINGLE_CLICK,    NULL, cb_click,  idx);
         iot_button_register_cb(s_btn[i], BUTTON_DOUBLE_CLICK,    NULL, cb_double, idx);
         iot_button_register_cb(s_btn[i], BUTTON_LONG_PRESS_START,NULL, cb_long,   idx);
+        // 按住期间的周期心跳。一次按住只有一个 LONG,所以要按时长分档(OK 长按 1 秒
+        // 起算、满 2.5 秒才离开屏幕)只能数 HOLD。
+        iot_button_register_cb(s_btn[i], BUTTON_LONG_PRESS_HOLD, NULL, cb_hold,   idx);
         // 抬起。长按类操作用它收尾:按住期间持续执行,松手立刻停,
         // 时长由手指决定而不是由一个写死的次数决定。
         iot_button_register_cb(s_btn[i], BUTTON_PRESS_UP,        NULL, cb_up,     idx);

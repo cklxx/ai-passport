@@ -10,9 +10,9 @@ a button on the card, speak, and text appears at your cursor.
 ```
   card                          Mac
   ┌──────────┐   BLE GATT   ┌─────────────┐
-  │ mic      │  16 kHz PCM  │ recv-ble    │
+  │ mic      │ 16 kHz μ-law │ recv-ble    │
   │ 3 buttons├─────────────►│ agent       │──► virtual mic ──► Doubao ──► text
-  │ screen   │  240 samples │             │
+  │ screen   │  480 samples │             │
   └──────────┘  per notify  └─────────────┘
 ```
 
@@ -33,10 +33,10 @@ a button on the card, speak, and text appears at your cursor.
 | Key | Action |
 | --- | --- |
 | DOWN | Start / stop recording |
-| OK | Stop and send |
+| OK | Stop and send (fires on press, not release) |
 | UP | Delete the last utterance |
-| UP, held | Clear the line |
-| OK, held | Leave voice mode for Wi-Fi / Feishu setup |
+| UP, held | Erase continuously; stops the moment you let go |
+| OK, held 2.5 s | Leave voice mode for Wi-Fi / Feishu setup |
 
 ## Install
 
@@ -75,15 +75,28 @@ success — the first being Doubao quietly listening to the built-in microphone.
 
 ## How it works
 
-**Raw PCM, not a codec.** ADPCM is stateful, so one dropped notification corrupts
-everything after it. Raw 16 kHz PCM costs exactly one frame, and 256 kbps fits
-BLE's budget with room to spare.
+**μ-law, not a stateful codec.** ADPCM is stateful, so one dropped notification
+corrupts everything after it. G.711 μ-law is per-sample, so a lost frame costs
+exactly that frame — the same property raw PCM had, at half the bytes.
 
-**Frames sized to the connection interval.** BLE passes roughly one notification
-per connection event, and macOS settles near 15 ms. So a frame is 240 samples —
-15 ms, 480 bytes, the largest whole PCM frame inside ATT MTU 512. At 10 ms per
-frame the link structurally starved and delivered only 68% of realtime; at 15 ms
-it delivers 92-100%.
+**The link limits frames per second, not bytes per second.** BLE passes roughly
+one notification per connection event, and macOS pins the interval at 30 ms and
+refuses to negotiate (the firmware asks for 15 ms and is rejected with rc=554).
+That caps the link near 34 notifications/s. A 240-sample PCM frame is 15 ms of
+audio and needs 66.7/s — a deficit of exactly half, and the measured delivery was
+47-56%. It never surfaced as an error: unsent notifications piled up in NimBLE's
+mbuf pool until allocation returned NULL, and the device dropped those frames
+itself, before the air.
+
+So a frame is 480 μ-law samples: 30 ms, 482 bytes on the wire — byte for byte the
+same packet — at 33.3 notifications/s. Delivery is 101-105% of realtime with zero
+frames lost and pool_dry at 0.
+
+Bandwidth was never the constraint. The original choice of raw PCM came from
+"256 kbps fits inside BLE's ~700 kbps", which is true and answers the wrong
+question. Do not fill the MTU further either: 252 samples (506 of 507 usable
+bytes) measured *worse*, 89% → 69%, because a fuller packet costs more of the
+controller's ACL buffers. Headroom beats occupancy in both directions.
 
 **A sequence number on every frame.** BLE notifications are never retransmitted,
 so without one a lost frame is indistinguishable from a device that is merely
@@ -103,9 +116,12 @@ being unplugged — so the stream is opened once, and a 100 ms prebuffer absorbs
 jitter.
 
 **Control codes outrank audio.** They share the BLE mbuf pool with a stream that
-takes a block every 15 ms. One lost audio frame is 15 ms of sound; one lost STOP
+takes a block every 30 ms. One lost audio frame is 30 ms of sound; one lost STOP
 leaves Doubao recording forever. So control sends retry and are only cleared once
-they actually go out.
+they actually go out. Hold-to-erase sends only its two edges for the same reason —
+the host runs the repetition, so a two-second hold costs the link two
+notifications instead of eighty — and the host carries a 10 s dead-man deadline in
+case the closing edge is the one that goes missing.
 
 **Signal conditioning on the device.** Input gain sits at 24 dB, not 30 — at 30 an
 ordinary speaking voice clipped, and clipping is unrecoverable distortion that a

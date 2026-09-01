@@ -16,11 +16,16 @@
 #include "product_onboarding.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "esp_timer.h"     // OK 长按按时长分档,见 on_key
 
 static const char *TAG = "main";
 
 // 0 = voice input (home); 1 = onboarding (Feishu bind); 2 = Feishu messenger.
 static int s_active = 0;
+
+// OK 长按离开当前屏幕所需的按住时长。组件的全局长按阈值(1 秒)归 UP 的按住删除
+// 所有 —— 那里的等待被直接感知,必须短。离开屏幕会中断录音,要难得多才对。
+#define OK_EXIT_HOLD_MS 2500
 
 // Onboarding finished binding Feishu → open the messenger.
 static void onboarding_complete(void) {
@@ -35,8 +40,25 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     ESP_LOGI(TAG, "on_key btn=%d ev=%d active=%d", btn, ev, s_active);
     if (!bsp_lvgl_lock(500)) return;
 
+    // OK 长按离开当前屏幕。组件对一次按住只发一个 LONG,所以「按了多久」只能靠
+    // 按住期间的 HOLD 心跳来数:LONG(1 秒)记下起点,任一次 HOLD 距起点满
+    // OK_EXIT_HOLD_MS 才真正离开。松手清零,没按满就什么都不发生。
+    static int64_t s_ok_long_us;             // OK 进入长按的时刻,0 = 未按住
+    bool ok_exit = false;
+    if (btn == BSP_BTN_OK) {
+        if (ev == BSP_BTN_LONG) {
+            s_ok_long_us = esp_timer_get_time();
+        } else if (ev == BSP_BTN_HOLD && s_ok_long_us != 0) {
+            ok_exit = esp_timer_get_time() - s_ok_long_us >=
+                      (int64_t)OK_EXIT_HOLD_MS * 1000;
+            if (ok_exit) s_ok_long_us = 0;   // 只触发一次
+        } else {
+            s_ok_long_us = 0;                // PRESS/RELEASE/其它:重新开始
+        }
+    }
+
     if (s_active == 0) {                        // voice = home (offline BLE mic)
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+        if (ok_exit) {
             demo_voice_exit();
             s_active = 1;                        // opt-in: go online, bind Feishu
             product_onboarding_enter(onboarding_complete);
@@ -46,7 +68,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     } else if (s_active == 1) {                  // onboarding (networked)
         product_onboarding_key(btn, ev);
     } else {                                     // Feishu messenger
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+        if (ok_exit) {
             // Let Feishu consume back navigation; at its root, return to voice.
             if (!demo_feishu_back()) {
                 demo_feishu_exit();

@@ -125,16 +125,15 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 # and errors still print. This also drops the format strings from Flash.
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 
-# 2500 ms, and the threshold now guards only one gesture. It was lowered to 800 ms
-# when UP's long press was a one-shot clear-the-line and holding too briefly silently
-# did the wrong thing (deleting one utterance instead). UP is now hold-to-erase, which
-# starts deleting the moment the threshold passes and stops when the finger lifts, so
-# an early trigger costs nothing — the finger decides how much goes.
+# 1000 ms. This is UP's hold-to-erase threshold — the wait before deleting starts,
+# so it is felt directly every time; 2500 ms was long enough to feel broken. An early
+# trigger costs nothing here, because erasing stops the moment the finger lifts.
 #
-# That leaves OK's long press, which exits the microphone screen for onboarding: it
-# interrupts a recording and abandons the home screen, and 800 ms is short enough to
-# hit while meaning to send. Two and a half seconds cannot be reached by accident.
-CONFIG_BUTTON_LONG_PRESS_TIME_MS=2500
+# OK's long press leaves the microphone screen for onboarding, which interrupts a
+# recording and must NOT be reachable in a second. It does not use this threshold:
+# main.c times the hold itself and requires 2500 ms. One knob cannot serve both, and
+# the gesture that destroys state is the one that needs its own number.
+CONFIG_BUTTON_LONG_PRESS_TIME_MS=1000
 
 # The audio stream sends a 482-byte notify every 30 ms. At the default 12 blocks of
 # 256 bytes that is only 6 frames in flight, and the pool ran dry for 54% of sends
