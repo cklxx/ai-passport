@@ -668,14 +668,14 @@ def cmd_recv_ble(args):
             def release():
                 if sessions[0] == gen:
                     hold_key(False)
-            threading.Timer(0.9, release).start()   # backstop; drain releases sooner
+            threading.Timer(0.6, release).start()   # backstop; drain releases sooner
 
             def drain():
                 # Drain what is queued, but do not wait long: the queue holds at
                 # most MAXBUF of audio and the old 2 s ceiling meant a stall at the
                 # end of a take delayed the release by seconds, which the user feels
                 # as "the last words take forever to appear".
-                for _ in range(12):       # up to 120 ms
+                for _ in range(8):        # up to 80 ms
                     if not q:
                         break
                     time.sleep(0.01)
@@ -691,14 +691,14 @@ def cmd_recv_ble(args):
                 # last frames — the queue being empty does not mean the audio has
                 # reached 豆包 yet, and a truncated tail is exactly the "last few
                 # words are slow or wrong" symptom.
-                time.sleep(0.05)
+                time.sleep(0.03)
                 # 豆包 needs a moment of held key after the audio ends to finalise
                 # the last sentence, but 400 ms was more than it needs and every
                 # millisecond here is the user waiting for their final words.
                 # 豆包 revises the tail of an utterance after the audio ends, so
                 # this wait is not dead time — releasing early commits a rough first
                 # pass instead of the corrected text.
-                time.sleep(0.45)
+                time.sleep(0.25)
                 # Only now close the gate. The order matters: this used to run before
                 # the hold above, so the stream was gated for the whole 450 ms while
                 # 豆包 was still listening and revising, and it revised against silence.
