@@ -40,7 +40,7 @@ void voice_ble_reset_audio_seq(void);
 // cannot take it".
 void voice_ble_audio_stats(unsigned *attempts, unsigned *accepted,
                            unsigned *alloc_fail, unsigned *notify_fail,
-                           int *last_rc);
+                           int *last_rc, unsigned *oversize, unsigned *mtu);
 
 // Block until a notification completes, meaning the mbuf pool can supply a buffer
 // again, or until the timeout. Polling for a free mbuf instead measured 7.7 s of

@@ -613,9 +613,10 @@ def cmd_recv_ble(args):
             return
         raw = bytes(data)
         code = raw[0]
-        if code == 6 and len(raw) >= 21:      # VOICE_CTRL_STATS
-            (ovf, first_ms, read_ms, send_ms, retry_ms,
-             att, acc, alloc_fail, notify_fail, rc) = struct.unpack("<10H", raw[1:21])
+        if code == 6 and len(raw) >= 25:      # VOICE_CTRL_STATS
+            (ovf, first_ms, read_ms, send_ms, retry_ms, att, acc,
+             alloc_fail, notify_fail, rc, oversize, mtu) = struct.unpack(
+                 "<12H", raw[1:25])
             rc = -(rc & 0x7FFF) if rc & 0x8000 else rc
             # Printed next to the host-side figures because that pairing is what
             # separates "the device never produced the frames" from "they arrived
@@ -627,7 +628,8 @@ def cmd_recv_ble(args):
             print(f"island: device read={read_ms}ms send={send_ms}ms "
                   f"retry={retry_ms}ms first_frame={first_ms}ms i2s_ovf={ovf} "
                   f"tried={att} sent={acc} pool_dry={alloc_fail} "
-                  f"refused={notify_fail} rc={rc}", file=sys.stderr)
+                  f"refused={notify_fail} rc={rc} oversize={oversize} mtu={mtu}",
+                  file=sys.stderr)
             return
         if code == 3:                     # VOICE_CTRL_START
             sessions[0] += 1              # invalidate any drain still sleeping
@@ -690,7 +692,6 @@ def cmd_recv_ble(args):
                 # reached 豆包 yet, and a truncated tail is exactly the "last few
                 # words are slow or wrong" symptom.
                 time.sleep(0.05)
-                primed[0] = False
                 # 豆包 needs a moment of held key after the audio ends to finalise
                 # the last sentence, but 400 ms was more than it needs and every
                 # millisecond here is the user waiting for their final words.
@@ -698,6 +699,10 @@ def cmd_recv_ble(args):
                 # this wait is not dead time — releasing early commits a rough first
                 # pass instead of the corrected text.
                 time.sleep(0.45)
+                # Only now close the gate. The order matters: this used to run before
+                # the hold above, so the stream was gated for the whole 450 ms while
+                # 豆包 was still listening and revising, and it revised against silence.
+                primed[0] = False
                 # Release FIRST, then check for a newer session. The guard used to
                 # sit above this, so a second press arriving during the 0.4 s
                 # finalize wait made the drain return without ever releasing — 豆包

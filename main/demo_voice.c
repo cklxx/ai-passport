@@ -198,8 +198,9 @@ static void worker_task(void *arg)
                 // real use.
                 unsigned att = 0, acc = 0, af = 0, nf = 0;
                 int lrc = 0;
-                voice_ble_audio_stats(&att, &acc, &af, &nf, &lrc);
-                uint16_t st16[10] = {
+                unsigned ovsz = 0, mtu = 0;
+                voice_ble_audio_stats(&att, &acc, &af, &nf, &lrc, &ovsz, &mtu);
+                uint16_t st16[12] = {
                     (uint16_t)(ovf > 0xFFFF ? 0xFFFF : ovf),
                     (uint16_t)(s_first_frame_us / 1000),
                     (uint16_t)(s_read_us / 1000),
@@ -210,6 +211,8 @@ static void worker_task(void *arg)
                     (uint16_t)(af > 0xFFFF ? 0xFFFF : af),
                     (uint16_t)(nf > 0xFFFF ? 0xFFFF : nf),
                     (uint16_t)(lrc < 0 ? (unsigned)(-lrc) | 0x8000 : lrc),
+                    (uint16_t)(ovsz > 0xFFFF ? 0xFFFF : ovsz),
+                    (uint16_t)mtu,
                 };
                 uint8_t buf[1 + sizeof(st16)];
                 buf[0] = VOICE_CTRL_STATS;

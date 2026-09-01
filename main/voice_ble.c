@@ -271,8 +271,10 @@ bool voice_ble_ready(void)
 
 void voice_ble_audio_stats(unsigned *attempts, unsigned *accepted,
                            unsigned *alloc_fail, unsigned *notify_fail,
-                           int *last_rc)
+                           int *last_rc, unsigned *oversize, unsigned *mtu)
 {
+    if (oversize) *oversize = s_audio_oversize;
+    if (mtu)      *mtu      = s_audio_mtu;
     if (attempts)    *attempts    = s_audio_attempts;
     if (accepted)    *accepted    = s_audio_accepted;
     if (alloc_fail)  *alloc_fail  = s_audio_alloc_fail;
