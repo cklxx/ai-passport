@@ -586,19 +586,37 @@ void demo_voice_key(bsp_btn_t btn, bsp_btn_ev_t ev)
         return;
     }
     if (btn == BSP_BTN_UP) {
-        // Short press deletes one utterance; holding clears the whole line. The
-        // long-press arrives as a separate event after PRESS has already queued a
-        // single delete, so the clear-all supersedes it — one extra backspace
-        // before a full clear is harmless, and this keeps the short press
+        // Short press deletes one utterance; holding erases continuously until the
+        // finger lifts. The long-press arrives as a separate event after PRESS has
+        // already queued a single delete, so the erase supersedes it — one extra
+        // backspace before a hold is harmless, and this keeps the short press
         // instant instead of waiting to rule out a long press.
-        if (ev == BSP_BTN_PRESS) s_pending_ctrl = VOICE_CTRL_DELETE;
-        if (ev == BSP_BTN_LONG)  s_pending_ctrl = VOICE_CTRL_DELETE_ALL;
+        //
+        // s_erasing is what keeps a short press from sending a stray ERASE_END:
+        // RELEASE now fires for every press, not just held ones, and an unpaired
+        // END would overwrite the DELETE still waiting in the one-deep ctrl slot.
+        static bool s_erasing;
+        if (ev == BSP_BTN_PRESS)   s_pending_ctrl = VOICE_CTRL_DELETE;
+        if (ev == BSP_BTN_LONG)  { s_pending_ctrl = VOICE_CTRL_ERASE_BEGIN; s_erasing = true; }
+        if (ev == BSP_BTN_RELEASE && s_erasing) {
+            s_pending_ctrl = VOICE_CTRL_ERASE_END;
+            s_erasing = false;
+        }
         return;
     }
-    // OK stays on CLICK: its long-press leaves this screen for onboarding
-    // (main.c), and BUTTON_PRESS_DOWN also fires at the start of a long press, so
-    // acting on the press would send before the gesture could complete.
-    if (ev == BSP_BTN_CLICK) {
+    // OK fires on PRESS too. It used to wait for CLICK because its long-press
+    // leaves this screen for onboarding (main.c) and PRESS_DOWN also opens a long
+    // press — but that cost the whole hold plus the ~180 ms double-click window on
+    // every send, which is the single longest delay in the input path and the one
+    // that reads as "the button is slow".
+    //
+    // The collision resolves the way UP's already does: LONG_PRESS_START does not
+    // arrive until 1.5 s in, so a long press sends first and then leaves. Landing an
+    // Enter a second and a half before abandoning the screen for onboarding is
+    // harmless — it submits text the user was done with anyway — and every key on
+    // this screen now behaves the same way, acting at contact and letting the
+    // long-press supersede.
+    if (ev == BSP_BTN_PRESS) {
         // While recording, OK means "I am done — send it": stop capture and send in
         // one press, rather than making the user stop with DOWN and then send.
         // The worker sees s_want_record go false, emits STOP, and then finds the

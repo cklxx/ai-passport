@@ -2,7 +2,9 @@
 
 bool voice_ctrl_valid(int code)
 {
-    return code >= VOICE_CTRL_SEND && code <= VOICE_CTRL_DELETE_ALL;
+    // The key codes only. STATS sits above this range deliberately — it travels
+    // device -> PC with a payload behind it and must never be sent as a bare code.
+    return code >= VOICE_CTRL_SEND && code <= VOICE_CTRL_ERASE_END;
 }
 
 size_t voice_pack_audio_header(uint8_t *buf, size_t cap, uint16_t seq)

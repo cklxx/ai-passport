@@ -23,8 +23,13 @@ static void test_ctrl(void)
     assert(b[0] == VOICE_MAGIC && b[1] == 1);
     assert(voice_pack_ctrl(b, sizeof(b), VOICE_CTRL_DELETE) == 2 && b[1] == 2);
     assert(voice_pack_ctrl(b, sizeof(b), VOICE_CTRL_STOP) == 2 && b[1] == 4);
-    assert(voice_pack_ctrl(b, sizeof(b), VOICE_CTRL_DELETE_ALL) == 2 && b[1] == 5);
-    assert(voice_ctrl_valid(VOICE_CTRL_DELETE_ALL));
+    assert(voice_pack_ctrl(b, sizeof(b), VOICE_CTRL_ERASE_BEGIN) == 2 && b[1] == 5);
+    assert(voice_pack_ctrl(b, sizeof(b), VOICE_CTRL_ERASE_END) == 2 && b[1] == 6);
+    assert(voice_ctrl_valid(VOICE_CTRL_ERASE_END));
+    // STATS travels device -> PC with a payload behind it, so it must never pass as
+    // a bare key code — island_agent.py reads code 7 as "unpack 24 more bytes".
+    assert(!voice_ctrl_valid(VOICE_CTRL_STATS));
+    assert(voice_pack_ctrl(b, sizeof(b), VOICE_CTRL_STATS) == 0);
 
     // bad code / small buffer rejected
     assert(voice_pack_ctrl(b, sizeof(b), (voice_ctrl_t)0) == 0);
@@ -35,7 +40,7 @@ static void test_ctrl(void)
 static void test_valid(void)
 {
     assert(!voice_ctrl_valid(0) && voice_ctrl_valid(1) && voice_ctrl_valid(4));
-    assert(!voice_ctrl_valid(6) && !voice_ctrl_valid(-1));
+    assert(voice_ctrl_valid(6) && !voice_ctrl_valid(7) && !voice_ctrl_valid(-1));
 }
 
 // These bytes are the wire contract: tools/island_agent.py asserts the same

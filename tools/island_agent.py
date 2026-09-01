@@ -633,6 +633,9 @@ def cmd_recv_ble(args):
     held = [False]
     sessions = [0]                        # bumped per START so a stale drain bails
     last_rx = [0.0]                       # monotonic time of the last audio frame
+    # Set between ERASE_BEGIN and ERASE_END. An Event, not a flag: the erase loop
+    # runs on its own thread and this is how the notification callback stops it.
+    erasing = threading.Event()
     def hold_key(down):
         if not pyautogui or held[0] == down:
             return
@@ -649,7 +652,7 @@ def cmd_recv_ble(args):
             return
         raw = bytes(data)
         code = raw[0]
-        if code == 6 and len(raw) >= 25:      # VOICE_CTRL_STATS
+        if code == 7 and len(raw) >= 25:      # VOICE_CTRL_STATS
             (ovf, first_ms, read_ms, send_ms, retry_ms, att, acc,
              alloc_fail, notify_fail, rc, oversize, mtu) = struct.unpack(
                  "<12H", raw[1:25])
@@ -771,21 +774,36 @@ def cmd_recv_ble(args):
                       file=sys.stderr)
             threading.Thread(target=drain, daemon=True).start()
             return
-        if code == 5:                     # VOICE_CTRL_DELETE_ALL — repeat backspace
+        if code in (5, 6):                # VOICE_CTRL_ERASE_BEGIN / ERASE_END
+            # Hold-to-erase: one backspace every 25 ms while the key is down. This
+            # replaced a fixed 40-press burst, which deleted the same amount however
+            # long the key was held — too little for a long utterance, and enough to
+            # eat text the user typed before ever touching the device.
+            #
             # Repeated backspace, not select-all-and-delete. Cmd+A selects the whole
-            # field, so in a chat box it wiped text the user had typed before ever
-            # touching the card — the gesture is "keep deleting", not "erase
-            # everything". 40 backspaces at 25 ms covers a long utterance in a second
-            # and stops at the start of the line by itself.
+            # field, so in a chat box it wiped everything; the gesture is "keep
+            # deleting", not "erase the field".
+            if code == 6:
+                erasing.clear()
+                return
             if not pyautogui:
-                print("island: delete-all (pip install pyautogui to inject)",
+                print("island: erase (pip install pyautogui to inject)",
                       file=sys.stderr)
                 return
+            if erasing.is_set():
+                return                    # already erasing; BEGIN is idempotent
+            erasing.set()
 
             def erase():
-                for _ in range(40):
+                # The deadline is a dead-man switch, not the intended stop: ERASE_END
+                # is a BLE notification and BLE notifications are never retransmitted,
+                # so a lost END would otherwise leave this loop deleting forever. Ten
+                # seconds is far longer than any real hold and still bounded.
+                deadline = time.monotonic() + 10.0
+                while erasing.is_set() and time.monotonic() < deadline:
                     pyautogui.press("backspace")
                     time.sleep(0.025)
+                erasing.clear()
             threading.Thread(target=erase, daemon=True).start()
             return
         action = {1: "enter", 2: "backspace"}.get(code)
