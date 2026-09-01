@@ -33,6 +33,12 @@ bool voice_ble_send_audio(const uint8_t *data, size_t len, uint16_t seq);
 // Zero the audio sequence counter. Call when a capture session starts so the
 // receiver's loss figures are per-session.
 void voice_ble_reset_audio_seq(void);
+
+// Block until a notification completes, meaning the mbuf pool can supply a buffer
+// again, or until the timeout. Polling for a free mbuf instead measured 7.7 s of
+// spin in a 9.4 s session and made frame delivery bursty; an mbuf only returns when
+// a connection event finishes, roughly every 15 ms.
+bool voice_ble_wait_tx(uint32_t timeout_ms);
 void voice_ble_reset_audio_stats(void);
 void voice_ble_log_audio_stats(void);
 

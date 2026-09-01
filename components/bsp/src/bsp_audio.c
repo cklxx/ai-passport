@@ -176,10 +176,15 @@ esp_err_t bsp_audio_set_format(uint32_t hz, uint8_t bits, uint8_t ch) {
     // ⚠ open 之后【不要】手动覆写 ES8311 的时钟分频寄存器(REG01~06):
     //   驱动已按采样率与 MCLK 精确算好,覆写会导致 ADC/DAC 时序错乱、录音回放全是杂音。
     //   这里只设麦克风模拟 PGA 增益。
-    // 24 dB, not 30: at 30 dB an ordinary speaking voice reached 0.0 dBFS and
-    // clipped (74 samples in one 4.6 s recording). Clipping is unrecoverable
-    // distortion, and a streaming ASR degrades sharply on it. This leaves ~6 dB of
-    // headroom with speech still around -20 dBFS.
+    // 24 dB. At 30 dB an ordinary speaking voice clipped — 74 samples at 0.0 dBFS
+    // in a 4.6 s take — and clipping is unrecoverable distortion a recogniser
+    // degrades sharply on. Lowering to 24 dB removed it entirely, which is the one
+    // audio change here confirmed to help.
+    //
+    // Raising it back to 28 dB was tried and reverted: it moved the measured RMS by
+    // 0.5 dB, so this control is not a linear dB scale on this codec and the value
+    // cannot be reasoned about, only measured. Use tools/analyse_take.py on a
+    // --dump recording before changing it.
     esp_codec_dev_set_in_gain(s_dev, 24.0f);
 
     s_opened = true; s_hz = hz; s_bits = bits; s_ch = ch;

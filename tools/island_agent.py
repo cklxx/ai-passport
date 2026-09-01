@@ -292,6 +292,13 @@ BLE_UUID_AUDIO = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 BLE_UUID_CTRL = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 
 
+def _read_quota(path):
+    """Read the quota packet from disk. Called off the event loop: a synchronous
+    read on the loop that dispatches BLE notifications stalls the audio stream."""
+    with open(path, "rb") as f:
+        return f.read()
+
+
 def cmd_recv_ble(args):
     """Connect to the device over BLE, stream its PCM audio to a virtual mic.
 
@@ -387,7 +394,15 @@ def cmd_recv_ble(args):
              # Link loss, from the frame sequence: total frames missing, how many
              # separate gaps they came in, and the longest single gap. A few long
              # bursts and many single drops call for different fixes.
-             "seq": None, "lost": 0, "bursts": 0, "worst": 0}
+             "seq": None, "lost": 0, "bursts": 0, "worst": 0,
+             # Latency spans, each opened and closed on THIS clock only.
+             "t_arm": 0.0,      # key pressed for 豆包
+             "t_rx1": 0.0,      # first frame received
+             "t_audible": 0.0,  # first real sample handed to the output device
+             "t_release": 0.0,  # key released
+             # Arrival-interval jitter: the device sends every 15 ms, so the spread
+             # of gaps here is the link's jitter. No clock reconciliation needed.
+             "gap_max": 0.0, "gap_prev": 0.0}
 
     # Counted in samples, not frames: the device's frame size is sized to the BLE
     # connection interval and may change, but the latency budget should not.
@@ -439,11 +454,17 @@ def cmd_recv_ble(args):
 
     idx0 = (np.arange(BLOCK) * 240) // BLOCK      # precomputed nominal index map
 
+    def ms(a, b):
+        """One span, in milliseconds, or '-' if either end was never stamped."""
+        return f"{(b - a) * 1000:.0f}ms" if a and b and b >= a else "-"
+
     def cb(out, frames, _t, _status):
         need = -(-frames // UP)
         if not primed[0]:
             if qlen[0] >= PREBUF:
                 primed[0] = True
+                if stats["t_audible"] == 0.0:
+                    stats["t_audible"] = time.monotonic()
             else:
                 out[:] = 0
                 return
@@ -493,7 +514,14 @@ def cmd_recv_ble(args):
     print(f"island: virtual mic live @ {RATE} Hz x{ch} (never stops)")
 
     def on_audio(_char, data):
-        last_rx[0] = time.monotonic()
+        now = time.monotonic()
+        if stats["t_rx1"] == 0.0:
+            stats["t_rx1"] = now
+        elif last_rx[0]:
+            gap = now - last_rx[0]
+            if gap > stats["gap_max"]:
+                stats["gap_max"] = gap
+        last_rx[0] = now
         raw = bytes(data)
         # Frames carry a 16-bit little-endian sequence number (see voice_ble.c).
         # BLE GATT notifications are never retransmitted, so without this a lost
@@ -543,6 +571,11 @@ def cmd_recv_ble(args):
             return
         (pyautogui.keyDown if down else pyautogui.keyUp)("optionright")
         held[0] = down
+        # Stamp the release here, not at the call sites: it happens on either the
+        # drain thread or the backstop timer, and stamping in only one of them left
+        # the span unreported whenever the other won.
+        if not down and stats["t_release"] == 0.0:
+            stats["t_release"] = time.monotonic()
 
     def on_ctrl(_char, data):
         if not data:
@@ -557,7 +590,10 @@ def cmd_recv_ble(args):
             stats["lo"] = 10 ** 9
             stats["seq"] = None
             stats["lost"] = stats["bursts"] = stats["worst"] = 0
+            stats["t_rx1"] = stats["t_audible"] = stats["t_release"] = 0.0
+            stats["gap_max"] = 0.0
             hold_key(True)                # hold 豆包 push-to-talk for the session
+            stats["t_arm"] = time.monotonic()
             # Re-assert on a fresh keyDown: pyautogui's key state and 豆包's idea of
             # it can disagree after a dropped notify or a manual Option press, and a
             # no-op keyDown on an already-held key leaves 豆包 unarmed with no way to
@@ -589,7 +625,7 @@ def cmd_recv_ble(args):
                 # most MAXBUF of audio and the old 2 s ceiling meant a stall at the
                 # end of a take delayed the release by seconds, which the user feels
                 # as "the last words take forever to appear".
-                for _ in range(30):       # up to 300 ms
+                for _ in range(12):       # up to 120 ms
                     if not q:
                         break
                     time.sleep(0.01)
@@ -605,7 +641,7 @@ def cmd_recv_ble(args):
                 # last frames — the queue being empty does not mean the audio has
                 # reached 豆包 yet, and a truncated tail is exactly the "last few
                 # words are slow or wrong" symptom.
-                time.sleep(0.12)
+                time.sleep(0.05)
                 primed[0] = False
                 # 豆包 needs a moment of held key after the audio ends to finalise
                 # the last sentence, but 400 ms was more than it needs and every
@@ -620,29 +656,46 @@ def cmd_recv_ble(args):
                 # stayed recording and the stop key looked dead.
                 if sessions[0] == gen:
                     hold_key(False)
-                el = stats["t1"] - stats["t0"]
+                el = stats["t1"] - stats["t0"] if stats["t0"] else 0.0
+                if not (0.0 < el < 3600.0):
+                    # No matching START: the agent restarted mid-session. Reporting
+                    # the monotonic clock's uptime as a session length is worse than
+                    # reporting nothing.
+                    print("island: session end (no start stamp; agent restarted)",
+                          file=sys.stderr)
+                    return
                 rate = stats["in"] / el if el > 0 else 0
                 lo = 0 if stats["lo"] > 10 ** 8 else stats["lo"]
                 print(f"island: session end {el:.1f}s in={stats['in']} "
                       f"({rate:.0f} Hz = {rate/SRC_RATE*100:.0f}% of 16k) "
                       f"underrun={stats['under']} stretch={stats['stretch']} "
                       f"trim={stats['trim']} lowater={lo/SRC_RATE*1000:.0f}ms "
+                      f"| arm->rx1={ms(stats['t_arm'], stats['t_rx1'])} "
+                      f"rx1->audible={ms(stats['t_rx1'], stats['t_audible'])} "
+                      f"stop->release={ms(stats['t1'], stats['t_release'])} "
+                      f"gapmax={stats['gap_max'] * 1000:.0f}ms "
                       f"| lost={stats['lost']}f in {stats['bursts']} gaps "
                       f"(worst {stats['worst']}f) "
                       f"{stats['lost']*100.0/max(1, stats['lost'] + stats['in']//240):.1f}%",
                       file=sys.stderr)
             threading.Thread(target=drain, daemon=True).start()
             return
-        if code == 5:                     # VOICE_CTRL_DELETE_ALL — clear the line
-            # Select-all then delete, rather than N backspaces: the agent has no
-            # idea how much text the IME has committed, and a fixed backspace
-            # count would either leave a tail or eat the line before it.
-            if pyautogui:
-                pyautogui.hotkey("command", "a")
-                pyautogui.press("delete")
-            else:
-                print("island: clear-all (pip install pyautogui to inject)",
+        if code == 5:                     # VOICE_CTRL_DELETE_ALL — repeat backspace
+            # Repeated backspace, not select-all-and-delete. Cmd+A selects the whole
+            # field, so in a chat box it wiped text the user had typed before ever
+            # touching the card — the gesture is "keep deleting", not "erase
+            # everything". 40 backspaces at 25 ms covers a long utterance in a second
+            # and stops at the start of the line by itself.
+            if not pyautogui:
+                print("island: delete-all (pip install pyautogui to inject)",
                       file=sys.stderr)
+                return
+
+            def erase():
+                for _ in range(40):
+                    pyautogui.press("backspace")
+                    time.sleep(0.025)
+            threading.Thread(target=erase, daemon=True).start()
             return
         action = {1: "enter", 2: "backspace"}.get(code)
         if action == "enter" and held[0]:
@@ -698,15 +751,20 @@ def cmd_recv_ble(args):
             last_q = None
             tick = 0
             while client.is_connected:
-                if tick % 60 == 0:          # 60 * 0.5 s = 30 s
+                # The quota push is housekeeping and must not disturb the audio
+                # stream. Two ways it did: a synchronous file read on the event loop
+                # that also dispatches BLE notifications, and a GATT write that
+                # competes for the same connection events the audio frames need.
+                # So read off-loop, and never write while a take is in progress —
+                # the number changes every 30 s and nobody is watching it mid-take.
+                if tick % 15 == 0 and not held[0]:   # 15 * 2 s = 30 s
                     try:
-                        with open(args.emit, "rb") as f:
-                            q = f.read()
-                        if len(q) in (ISLAND_LEN_V1, ISLAND_LEN) and q != last_q:
-                            await client.write_gatt_char(BLE_UUID_CTRL, q, response=False)
-                            last_q = q
+                        q = await asyncio.to_thread(_read_quota, args.emit)
                     except OSError:
-                        pass
+                        q = None
+                    if q and len(q) in (ISLAND_LEN_V1, ISLAND_LEN) and q != last_q:
+                        await client.write_gatt_char(BLE_UUID_CTRL, q, response=False)
+                        last_q = q
                 # Watchdog: the key is only legitimately held while audio is
                 # flowing. If it is held but nothing has arrived for 2 s, the STOP
                 # notify was lost or the device stopped without telling us — hold
@@ -720,7 +778,8 @@ def cmd_recv_ble(args):
                     print("island: link silent 20 s; releasing key", file=sys.stderr)
                     hold_key(False)
                 tick += 1
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(2.0)     # was 0.5: fewer wake-ups on the loop
+                                            # that also dispatches audio frames
 
     async def run():
         # Auto-reconnect forever: when the device sleeps, moves out of range, or

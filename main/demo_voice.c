@@ -81,6 +81,10 @@ static unsigned s_quiet_ticks;           // worker-only: consecutive quiet RMS t
 static bool s_backlog;                   // worker-only: holds one unsent frame
 static int32_t s_hp_x, s_hp_y;           // worker-only: high-pass filter state
 static uint64_t s_read_us, s_send_us, s_retry_us;
+// Press-to-first-frame, in microseconds. Both stamps come from esp_timer on this
+// device, so this is a single-clock measurement — the PC's clock is never involved
+// and there is nothing to reconcile.
+static uint64_t s_first_frame_us;
 static int64_t s_record_start_us;
 static unsigned s_tx_frames;   // audio frames encoded (diagnostic)
 static unsigned s_tx_ok;       // frames the BLE stack accepted (diagnostic)
@@ -169,6 +173,7 @@ static void worker_task(void *arg)
             s_hp_x = s_hp_y = 0;              // no filter ring-in from the last take
             voice_ble_reset_audio_stats();
             s_read_us = s_send_us = s_retry_us = 0;
+            s_first_frame_us = 0;
             s_record_start_us = esp_timer_get_time();
             ESP_LOGI(TAG, "recording START");
             voice_ble_send_ctrl(VOICE_CTRL_START);
@@ -182,8 +187,11 @@ static void worker_task(void *arg)
             // kept streaming. A genuinely dropped link is handled by the
             // reconnect path below.
             capturing = false; s_level = 0;
+            s_backlog = false;              // nothing from this take may follow STOP
             unsigned ovf = (unsigned)bsp_audio_rx_overflows();
-            ESP_LOGI(TAG, "timing: wall=%lldus read=%lluus send=%lluus retry=%lluus",
+            ESP_LOGI(TAG, "timing: first_frame=%lluus wall=%lldus read=%lluus "
+                     "send=%lluus retry=%lluus",
+                     (unsigned long long)s_first_frame_us,
                      (long long)(esp_timer_get_time() - s_record_start_us),
                      (unsigned long long)s_read_us, (unsigned long long)s_send_us,
                      (unsigned long long)s_retry_us);
@@ -194,6 +202,7 @@ static void worker_task(void *arg)
                      (s_elapsed_ms / (VOICE_CHUNK_SAMPLES * 1000 / VOICE_SAMPLE_RATE)) : 0);
             if (ready) voice_ble_send_ctrl(VOICE_CTRL_STOP);
             set_state(ready ? ST_IDLE : ST_CONNECTING);
+            continue;                       // do not capture or notify past STOP
         } else if (!capturing) {
             set_state(ready ? ST_IDLE : ST_CONNECTING);
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -205,7 +214,11 @@ static void worker_task(void *arg)
         if (s_backlog) {
             int64_t t0 = esp_timer_get_time();
             if (!voice_ble_send_audio((const uint8_t *)backlog, sizeof(backlog), backlog_seq)) {
-                vTaskDelay(1);              // pool still dry; let NimBLE run
+                // Block until a notification completes rather than spinning: an
+                // mbuf only frees when a connection event finishes (~15 ms), so
+                // polling every tick burned 83% of the session in retries and made
+                // delivery arrive in bursts.
+                voice_ble_wait_tx(20);
                 s_retry_us += esp_timer_get_time() - t0;
                 continue;
             }
@@ -226,8 +239,13 @@ static void worker_task(void *arg)
         // spectrum had 11.5% of its energy below 80 Hz and only 36% in the
         // 300-3400 Hz speech band: handling noise and body rumble that carry no
         // speech, consume the headroom that then clips, and skew the ASR's features.
+        // Moving the corner to 150 Hz was tried and reverted: sub-300 Hz energy
+        // measured HIGHER afterwards (61.9% -> 72.3%), which contradicts the theory,
+        // so the change was not justified whatever the explanation. Measure with
+        // tools/analyse_take.py before touching this again — and take several
+        // recordings, since the level varies more between takes than between builds.
         // y[n] = a*(y[n-1] + x[n] - x[n-1]), a = 1 - 2*pi*fc/fs, fixed point.
-        // Q15 coefficient 0.9646 for fc = 90 Hz at 16 kHz.
+        // Q15 coefficient 0.9647 for fc = 90 Hz at 16 kHz.
         for (int i = 0; i < VOICE_CHUNK_SAMPLES; i++) {
             int32_t x = pcm[i];
             int32_t y = (int32_t)(((int64_t)31610 * (s_hp_y + x - s_hp_x)) >> 15);
@@ -273,6 +291,9 @@ static void worker_task(void *arg)
         uint16_t seq = voice_ble_next_audio_seq();
         t0 = esp_timer_get_time();
         bool ok = voice_ble_send_audio((const uint8_t *)pcm, sizeof(pcm), seq);
+        if (ok && s_first_frame_us == 0) {
+            s_first_frame_us = esp_timer_get_time() - s_record_start_us;
+        }
         s_send_us += esp_timer_get_time() - t0;
         if (!ok) {
             memcpy(backlog, pcm, sizeof(pcm));

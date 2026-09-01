@@ -2,6 +2,7 @@
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -31,6 +32,9 @@ static uint16_t s_ctrl_val_handle;
 static volatile bool s_audio_subscribed;
 static volatile bool s_running;
 static voice_ble_quota_cb_t s_quota_cb;
+// Signalled from the NimBLE host task when a notification completes, so a sender
+// blocks until the pool can actually supply an mbuf rather than polling for one.
+static SemaphoreHandle_t s_tx_done;
 static uint16_t s_audio_seq;
 static uint16_t s_audio_mtu;
 static uint16_t s_audio_msys_min;
@@ -120,10 +124,25 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "audio subscribe=%d", s_audio_subscribed);
         }
         break;
+    case BLE_GAP_EVENT_NOTIFY_TX:
+        // Fired when a notification leaves the controller, i.e. when its mbuf is
+        // about to be reusable. Wake a sender that is waiting for one.
+        if (s_tx_done != NULL) xSemaphoreGive(s_tx_done);
+        break;
+
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(TAG, "mtu=%d", event->mtu.value);
         break;
     case BLE_GAP_EVENT_CONN_UPDATE: {
+        // Report the interval actually in force. A peripheral's request is often
+        // refused outright (rc=554 seen here), and 1.25 ms x N is the only rate at
+        // which notifications can leave, so this number bounds the audio stream.
+        struct ble_gap_conn_desc d;
+        if (ble_gap_conn_find(s_conn, &d) == 0) {
+            ESP_LOGI(TAG, "conn itvl=%u (%u.%02u ms) latency=%u timeout=%u",
+                     d.conn_itvl, d.conn_itvl * 125 / 100, d.conn_itvl * 125 % 100,
+                     d.conn_latency, d.supervision_timeout);
+        }
         struct ble_gap_conn_desc desc;
         if (event->conn_update.status == 0 &&
             ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
@@ -182,6 +201,10 @@ static void host_task(void *arg)
 esp_err_t voice_ble_start(void)
 {
     if (s_running) return ESP_OK;
+    if (s_tx_done == NULL) {
+        s_tx_done = xSemaphoreCreateBinary();
+        if (s_tx_done == NULL) return ESP_ERR_NO_MEM;
+    }
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) return err;
 
@@ -220,6 +243,12 @@ bool voice_ble_ready(void)
     // central hasn't subscribed, ble_gatts_notify_custom simply no-ops — a
     // dropped frame, not a corrupted stream.
     return s_running && s_conn != BLE_HS_CONN_HANDLE_NONE;
+}
+
+bool voice_ble_wait_tx(uint32_t timeout_ms)
+{
+    if (s_tx_done == NULL) return false;
+    return xSemaphoreTake(s_tx_done, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
 }
 
 void voice_ble_reset_audio_seq(void)
