@@ -7,3 +7,6 @@ managed_components/
 .idea/
 __pycache__/
 *.pyc
+
+# scratch space for local reports, never committed
+.scratch/
