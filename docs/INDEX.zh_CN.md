@@ -33,6 +33,7 @@
 | [fork-guide.zh_CN.md](./fork-guide.zh_CN.md) | fork 工作流 | authoritative | 目录结构、main 保持干净、fork 约定、docs/assets 使用 |
 | [software-design/README.zh_CN.md](./software-design/README.zh_CN.md) | 软件设计索引 | 参考 | 软件设计文档子目录骨架 |
 | [software-design/feishu-messenger.zh_CN.md](./software-design/feishu-messenger.zh_CN.md) | 飞书消息设计 | authoritative | 设备直连飞书的交互、配网与运行时边界 |
+| [software-design/voice-link-baseline.zh_CN.md](./software-design/voice-link-baseline.zh_CN.md) | BLE 语音链路基准 | authoritative | 实测基准、三条硬约束、不要动的参数、被推翻的假设。改延迟或缓冲前必读 |
 | [hardware-design/README.zh_CN.md](./hardware-design/README.zh_CN.md) | 硬件设计索引 | 参考 | 硬件设计文档子目录骨架 |
 | [hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.zh_CN.md](./hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.zh_CN.md) | 硬件指南 | authoritative | 完整硬件开发指南与排障参考（上游） |
 | [hardware-design/specifications.zh_CN.md](./hardware-design/specifications.zh_CN.md) | 产品规格 | authoritative | 产品规格（尺寸、重量、电池、充电、NFC、按键等对外口径） |

@@ -36,5 +36,6 @@ Use this page to discover repository documentation. `authoritative` documents de
 | [software-design/README.md](software-design/README.md) | Software-design document index | reference |
 | [../plays/INDEX.md](../plays/INDEX.md) | Index of archived applications in `plays/` | reference |
 | [software-design/feishu-messenger.md](software-design/feishu-messenger.md) | Direct-device Feishu messenger design and provisioning contract | authoritative |
+| [software-design/voice-link-baseline.md](software-design/voice-link-baseline.md) | BLE voice link baseline: measured figures, hard constraints, values not to change, and assumptions that proved false — read before touching any latency or buffer value | authoritative |
 
 GitHub community documents: [CONTRIBUTING.md](../.github/CONTRIBUTING.md), [CODE_OF_CONDUCT.md](../.github/CODE_OF_CONDUCT.md), [SECURITY.md](../.github/SECURITY.md), and [SUPPORT.md](../.github/SUPPORT.md).
