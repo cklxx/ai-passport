@@ -34,13 +34,21 @@ bool voice_ble_send_audio(const uint8_t *data, size_t len, uint16_t seq);
 // receiver's loss figures are per-session.
 void voice_ble_reset_audio_seq(void);
 
-// Why audio notifications did not go out. alloc_fail means the mbuf pool was dry,
+// Why audio notifications did not go out. A dry mbuf pool shows up as EITHER
+// alloc_fail (the 2-byte header could not get a block) or append_fail (the header
+// got one, then the 480-byte payload could not get the rest) — the same condition
+// caught at two points, so both must be reported or loss hides in the gap.
 // notify_fail means the host stack refused the queued notification and last_rc says
-// why. Distinguishing those is the difference between "add buffers" and "the link
-// cannot take it".
+// why. Distinguishing pool-dry from refused is the difference between "add buffers"
+// and "the link cannot take it". msys_min is the low-water mark of free mbufs,
+// which says how close the pool came to dry even in a session that lost nothing.
+//
+// attempts must equal accepted + alloc_fail + append_fail + notify_fail + oversize.
+// If it does not, a failure path is unreported — see the note in the host agent.
 void voice_ble_audio_stats(unsigned *attempts, unsigned *accepted,
-                           unsigned *alloc_fail, unsigned *notify_fail,
-                           int *last_rc, unsigned *oversize, unsigned *mtu);
+                           unsigned *alloc_fail, unsigned *append_fail,
+                           unsigned *notify_fail, int *last_rc,
+                           unsigned *oversize, unsigned *mtu, unsigned *msys_min);
 
 // Block until a notification completes, meaning the mbuf pool can supply a buffer
 // again, or until the timeout. Polling for a free mbuf instead measured 7.7 s of

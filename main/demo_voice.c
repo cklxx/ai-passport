@@ -234,11 +234,12 @@ static void worker_task(void *arg)
                 // device-side shortfall from a delivery one — and needing USB serial
                 // to read it meant it was unavailable exactly when the device was in
                 // real use.
-                unsigned att = 0, acc = 0, af = 0, nf = 0;
+                unsigned att = 0, acc = 0, af = 0, pf = 0, nf = 0;
                 int lrc = 0;
-                unsigned ovsz = 0, mtu = 0;
-                voice_ble_audio_stats(&att, &acc, &af, &nf, &lrc, &ovsz, &mtu);
-                uint16_t st16[12] = {
+                unsigned ovsz = 0, mtu = 0, msys = 0;
+                voice_ble_audio_stats(&att, &acc, &af, &pf, &nf, &lrc,
+                                      &ovsz, &mtu, &msys);
+                uint16_t st16[14] = {
                     (uint16_t)(ovf > 0xFFFF ? 0xFFFF : ovf),
                     (uint16_t)(s_first_frame_us / 1000),
                     (uint16_t)(s_read_us / 1000),
@@ -251,6 +252,12 @@ static void worker_task(void *arg)
                     (uint16_t)(lrc < 0 ? (unsigned)(-lrc) | 0x8000 : lrc),
                     (uint16_t)(ovsz > 0xFFFF ? 0xFFFF : ovsz),
                     (uint16_t)mtu,
+                    // Appended, not inserted: an older agent unpacks the first 12
+                    // and ignores the tail. append_fail is the SAME dry pool as
+                    // alloc_fail caught one step later, and it was the larger half
+                    // of the loss while going entirely unreported.
+                    (uint16_t)(pf > 0xFFFF ? 0xFFFF : pf),
+                    (uint16_t)(msys > 0xFFFF ? 0xFFFF : msys),
                 };
                 uint8_t buf[1 + sizeof(st16)];
                 buf[0] = VOICE_CTRL_STATS;

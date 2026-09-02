@@ -689,19 +689,34 @@ def cmd_recv_ble(args):
             (ovf, first_ms, read_ms, send_ms, retry_ms, att, acc,
              alloc_fail, notify_fail, rc, oversize, mtu) = struct.unpack(
                  "<12H", raw[1:25])
+            # Fields 13-14 were appended later; a device on older firmware sends
+            # only 12 and reads as 0 rather than failing to unpack.
+            append_fail, msys_min = (struct.unpack("<2H", raw[25:29])
+                                     if len(raw) >= 29 else (0, 0))
             rc = -(rc & 0x7FFF) if rc & 0x8000 else rc
             # Printed next to the host-side figures because that pairing is what
             # separates "the device never produced the frames" from "they arrived
             # late". retry dominating means the sender is waiting on the BLE pool;
             # ovf means capture is being dropped before it is ever sent.
-            # attempts vs accepted says how many frames the worker even tried to
-            # send; alloc_fail means the mbuf pool was dry and notify_fail means the
-            # host stack refused a queued notification. Those want opposite fixes.
+            #
+            # pool_dry and pool_mid are the SAME dry mbuf pool caught one step
+            # apart: the 2-byte header failed to get a block, or it got one and the
+            # 480-byte payload could not get the rest. Reporting only the first hid
+            # the larger half — a window of sessions read "pool_dry=136" against
+            # 553 frames actually lost. refused means the host stack rejected a
+            # notification it had accepted into the queue, which wants the opposite
+            # fix, so the two must stay separate.
+            #
+            # unacct must be 0. It is tried minus every reported outcome, so any
+            # nonzero value means a failure path exists that nothing counts — the
+            # exact defect that let this loss hide. Do not delete this check.
+            unacct = att - acc - alloc_fail - append_fail - notify_fail - oversize
             print(f"island: device read={read_ms}ms send={send_ms}ms "
                   f"retry={retry_ms}ms first_frame={first_ms}ms i2s_ovf={ovf} "
                   f"tried={att} sent={acc} pool_dry={alloc_fail} "
-                  f"refused={notify_fail} rc={rc} oversize={oversize} mtu={mtu}",
-                  file=sys.stderr)
+                  f"pool_mid={append_fail} refused={notify_fail} rc={rc} "
+                  f"oversize={oversize} unacct={unacct} msys_min={msys_min} "
+                  f"mtu={mtu}", file=sys.stderr)
             return
         if code == 3:                     # VOICE_CTRL_START
             sessions[0] += 1              # invalidate any drain still sleeping
