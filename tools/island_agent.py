@@ -703,13 +703,23 @@ def cmd_recv_ble(args):
             # apart: the 2-byte header failed to get a block, or it got one and the
             # 480-byte payload could not get the rest. Reporting only the first hid
             # the larger half — a window of sessions read "pool_dry=136" against
-            # 553 frames actually lost. refused means the host stack rejected a
+            # 553 failed ATTEMPTS. refused means the host stack rejected a
             # notification it had accepted into the queue, which wants the opposite
             # fix, so the two must stay separate.
             #
+            # tried counts ATTEMPTS, NOT FRAMES. A frame that fails is retried once
+            # (demo_voice.c backlog), so it increments tried twice. Measured across
+            # the degraded window, tried - sent = 2 * lost + rescued held exactly in
+            # all 9 sessions (553 = 2*275 + 3, 390 = 2*195, 240 = 2*120, ...). So
+            # sent/tried UNDERSTATES delivery by roughly the loss rate again: that
+            # session was 68.5% by attempts but 81.4% by frames, and 81.4% is what
+            # the host's own lost= field independently reported. Read lost=, not
+            # sent/tried, for the real figure. Unique frames captured = in/480 + lost.
+            #
             # unacct must be 0. It is tried minus every reported outcome, so any
             # nonzero value means a failure path exists that nothing counts — the
-            # exact defect that let this loss hide. Do not delete this check.
+            # exact defect that let this loss hide. It is an ATTEMPTS identity, which
+            # is why it stays valid despite the double-counting above. Do not delete.
             unacct = att - acc - alloc_fail - append_fail - notify_fail - oversize
             print(f"island: device read={read_ms}ms send={send_ms}ms "
                   f"retry={retry_ms}ms first_frame={first_ms}ms i2s_ovf={ovf} "

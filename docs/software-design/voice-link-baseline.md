@@ -18,10 +18,21 @@ Device side, the `island: device read=` line:
 
 | Field | Healthy | Meaning |
 | --- | --- | --- |
-| `tried` / `sent` | **equal** | frames encoded / frames the BLE stack accepted |
-| `pool_dry` | **0** | times `ble_hs_mbuf_from_flat` returned NULL |
+| `tried` / `sent` | **equal** | notification ATTEMPTS / attempts the BLE stack accepted — see below, these are not frame counts |
+| `pool_dry` + `pool_mid` | **0** | the mbuf pool was dry: header could not allocate / payload could not append |
+| `unacct` | **0** | `tried` minus every reported outcome. Nonzero means an uncounted failure path |
+| `msys_min` | 20-40 | free-mbuf low-water mark. Approaching 0 means the pool is about to refuse frames |
 | `refused` | 0 | times the host stack rejected a queued notification |
 | `i2s_ovf` | 0-1 | capture-ring overflows, counted in DMA descriptors — NOT BLE frames |
+
+**`tried` counts attempts, not frames.** A rejected frame is retried once
+(the backlog in `demo_voice.c`), so it increments `tried` twice. Measured across
+the whole degraded window, `tried - sent = 2 * lost + rescued` held exactly in all
+nine sessions (553 = 2×275 + 3, 390 = 2×195, 240 = 2×120, …). So `sent / tried`
+**understates** delivery by roughly the loss rate a second time: the worst session
+read 68.5% by attempts but 81.4% by frames, and 81.4% is what the host's own
+`lost=` field independently reported. **Read `lost=` for the real figure**, never
+`sent/tried`. Unique frames captured = `in/480 + lost`.
 
 Host side, the `island: session end` line:
 
@@ -35,6 +46,43 @@ Host side, the `island: session end` line:
 | `gapmax` | 89-178ms | worst frame arrival gap |
 | `stop->release` | **488-503ms** | STOP to push-to-talk release; variance only 15ms |
 | `rx1->audible` | 47-103ms | first frame to first audible sample |
+
+## The one failure mode seen in the wild
+
+On 2026-09-02 a window of nine consecutive sessions degraded to 81-95% delivered,
+then recovered on its own. It is documented here because **no code change caused it
+and no code change ended it** — the recovery happens between two consecutive
+sessions with no reboot, no reconnect and no flash in between, so the identical
+binary produced both 81% and 100%.
+
+What the logs do establish:
+
+| Quantity | Degraded (7 sessions >10 s) | Clean (35 sessions >10 s) |
+| --- | --- | --- |
+| notifications delivered per second | 26.9-31.6, median **29.1** | 33.3-33.9, median **33.6** |
+| `lowater` | 0 ms, every session | 30-180 ms |
+
+The two ranges do not overlap. The device produces 33.3 frames/s and cannot slow
+down; when the air only carries 29/s, the 4/s deficit (13%, matching the measured
+7-19% loss) backs up into the msys pool until allocation fails and **the device
+drops the frames itself, before the air**. `refused=0` and `rc=0` throughout: the
+radio never rejected anything, and nothing was lost over the air.
+
+So the question is not "why did the pool go dry" — that is a consequence. It is
+**"why did the link carry 29 notifications/s instead of 33"**. The connection
+interval would answer it, and it is not in any log; `msys_min` (added 2026-09-02)
+now shows how close a healthy session comes to the same cliff.
+
+Two instrument lessons from this window, both instances of rule 3 below:
+
+- **`pool_dry` alone understated pool exhaustion ~4×.** A dry pool is caught at two
+  points, and only one was reported. See the `tried`/`sent` note above.
+- **`read_us / duration` cannot measure worker CPU headroom.** It reads ~96% in both
+  healthy and degraded sessions because `bsp_audio_read` blocks on I2S DMA and is
+  therefore the sink for all slack — algebraically ~1 − send/dur either way. It is a
+  dead instrument for this question. Use unique frames/s (≈33) with `i2s_ovf=0`
+  instead, which does distinguish "capture kept up" from "capture fell behind".
+
 
 ## Three hard constraints
 
