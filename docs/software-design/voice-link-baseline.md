@@ -122,6 +122,33 @@ multiply.** Same data, the earlier explanation was wrong.
    12-50% of frames. It may have been compensating for *loss* rather than revision time.
    With loss now zero it is re-testable — but by rule 1.
 
+## What the 490 ms tail is made of
+
+Measured 488-503 ms with only 15 ms of variance, so it is a deterministic wait.
+The parts, in `drain()` in `island_agent.py`:
+
+| Stage | Measured | Notes |
+| --- | --- | --- |
+| drain loop, `range(10)` | **117 ms** | **never exits early** — the queue holds 124-274 ms at STOP, which 100 ms cannot drain |
+| play-out margin, `sleep(0.03)` | 34 ms | a floor tuned by ear, not computed: `744372b` used 0.05 to fix an audible truncation, `c61ae9f` cut it to 0.03 and validated by listening |
+| revision window, `sleep(0.33)` | 333 ms | the only large term; see rule 4 above |
+
+**The gate stays open through both**, deliberately — `f27f08b` moved the close after
+the hold because gating here made Doubao revise against silence.
+
+What it hears instead is worth knowing. The queue is dry by then, so `cb()` takes its
+repair path about 11 times — and `tail[0]` is assigned only on the consuming path,
+below that branch's return, so all 11 callbacks emit **the same 30 ms block reversed**.
+Identical tiling means a seam every 30 ms (measured ~6800 LSB against ~2900 max inside
+the block): a 33 Hz click train carrying the last real phone's spectrum, for the whole
+revision window. It does not occur mid-session, where the queue goes dry at most once.
+
+**Left alone on purpose.** Three independent reviews agreed the fix is not obvious —
+fading to silence, advancing the mirror, and emitting noise were each argued and none
+survived — and the repair code is shared with the mid-session path the current
+zero-loss build rests on. If it is ever changed, gate it on `stats["t1"]` so only the
+tail is affected, and validate by listening per rule 1.
+
 ## A note on NFC
 
 The NTAG213 is a **passive tag with no MCU-facing API**; there is no NFC code in the

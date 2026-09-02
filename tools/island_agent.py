@@ -757,18 +757,34 @@ def cmd_recv_ble(args):
                     if not q:
                         break
                     time.sleep(0.01)
-                # Close the output gate before the finalize wait. The stream is
-                # never stopped, so without this the callback keeps running on an
-                # empty queue and the dry-repair path replays the same reversed
-                # block over and over — a -25 dBFS drone fed to 豆包 for the
-                # whole wait, while the key is still held. Those callbacks were
-                # also counted against the session, which is the entire source of
-                # the constant "underruns" counted across the tail.
-                # Let the output stream play out what it already holds before
-                # closing the gate. Closing immediately after the drain loop cut the
-                # last frames — the queue being empty does not mean the audio has
-                # reached 豆包 yet, and a truncated tail is exactly the "last few
-                # words are slow or wrong" symptom.
+                # The gate stays OPEN through both waits below, deliberately: 豆包
+                # revises the tail of an utterance while the key is held, and gating
+                # here made it revise against silence (f27f08b moved the close to
+                # after the hold for exactly that reason).
+                #
+                # What it hears instead is worth knowing before anyone tunes these
+                # numbers. The queue is dry by now, so cb() takes its repair path
+                # roughly 11 times — and tail[0] is only assigned on the consuming
+                # path, below that branch's return, so all 11 callbacks emit the
+                # SAME 30 ms block reversed. Identical tiling means a seam every
+                # 30 ms (measured ~6800 LSB against ~2900 max inside the block), i.e.
+                # a 33 Hz click train carrying the last real phone's spectrum, for
+                # the whole revision window.
+                #
+                # Left alone on purpose. Three independent reviews agreed the fix is
+                # not obvious — fading to silence, advancing the mirror, and emitting
+                # noise were all argued and none survived — and the repair code is
+                # shared with the mid-session path that the current zero-loss build
+                # rests on. If it is ever changed, gate it on stats["t1"] so only the
+                # tail changes, and validate by listening: see rule 1 in
+                # docs/software-design/voice-link-baseline.md.
+                #
+                # Let the output stream play out what it already holds first. Closing
+                # immediately after the drain loop cut the last frames — an empty
+                # queue does not mean the audio has reached 豆包 yet, and a truncated
+                # tail is exactly the "last few words are slow or wrong" symptom.
+                # 0.05 fixed that audibly (744372b) and 0.03 was validated by ear
+                # (c61ae9f). It is a floor tuned by listening, not a computed value.
                 time.sleep(0.03)
                 # 豆包 needs a moment of held key after the audio ends to finalise
                 # the last sentence, but 400 ms was more than it needs and every
