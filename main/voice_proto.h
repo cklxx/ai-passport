@@ -1,18 +1,18 @@
 #pragma once
 
 // Path B voice input: the device is a wireless mic for the PC. It captures 16k
-// mono PCM and broadcasts it over Wi-Fi UDP; a PC agent feeds it into a virtual
-// audio device (e.g. VB-Cable) so 豆包/any input method transcribes it, and
-// injects Enter/Backspace on the send/delete control packets. Three keys:
-// DOWN = start/stop mic, OK = 发送 (Enter), UP = 删除 (Backspace),
-// UP long-press = 全部删除 (clear the line).
+// mono audio, encodes it as G.711 mu-law, and sends it over BLE GATT
+// notifications; a PC agent feeds it into a virtual audio device (BlackHole) so
+// 豆包/any input method transcribes it, and injects Enter/Backspace on the
+// send/delete control packets. Three keys: DOWN = start/stop mic,
+// OK = 发送 (Enter), UP = 删除 (Backspace), UP held = erase continuously.
 //
 // This module is the pure wire contract (framing only), so it runs host tests
 // and the PC agent (tools/island_agent.py) stays byte-for-byte in sync.
 //
-// Packets, device -> PC, UDP broadcast:
-//   audio: [0x56 'V'][0x00 type][seq_lo][seq_hi][PCM int16 little-endian...]
-//   ctrl:  [0x56 'V'][code]            code in {1 send, 2 delete, 3 start,
+// Packets, device -> PC, one BLE notification each:
+//   audio: [seq_lo][seq_hi][480 mu-law bytes] = 482 on the wire, 30 ms of audio
+//   ctrl:  [code]                       code in {1 send, 2 delete, 3 start,
 //                                                4 stop, 5 erase-begin,
 //                                                6 erase-end}
 //   stats: [7][ovf u16][first_frame_ms u16][read_ms u16][send_ms u16][retry_ms u16]
