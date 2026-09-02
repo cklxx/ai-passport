@@ -390,7 +390,7 @@ done:
 #define VOICE_DIM_PERCENT  0         // fully off. The panel itself stays on, so a
                                      // key press brings the image straight back with
                                      // nothing to redraw or re-init.
-#define VOICE_BRIGHT       30        // normal brightness. 100% was never needed —
+#define VOICE_BRIGHT       50        // normal brightness. 100% was never needed —
                                      // this is a 240x320 panel read at arm's length
                                      // indoors, and the backlight is the largest
                                      // draw on a 520 mAh battery.

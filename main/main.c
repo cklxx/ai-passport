@@ -103,10 +103,10 @@ void app_main(void) {
                  BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
         return;
     }
-    // 30%,不是 100%。这块 240x320 屏在室内近距离看,30% 足够清楚,而背光是 520 mAh
-    // 电池上最大的一笔开销。语音主屏会在断连后把它降到 0(见 demo_voice.c 的
-    // VOICE_DIM_AFTER_MS),这里只是开机到进主屏之间的初值。
-    bsp_display_backlight(30);
+    // 50%,不是 100%。这块 240x320 屏在室内近距离看,50% 足够清楚,而背光是 520 mAh
+    // 电池上最大的一笔开销。语音主屏会在空闲后把它降到 0(见 demo_voice.c 的
+    // VOICE_DIM_AFTER_MS),这里只是开机到进主屏之间的初值,要和 VOICE_BRIGHT 一致。
+    bsp_display_backlight(50);
 
     bool buttons_ok = (bsp_button_init(on_key, NULL) == ESP_OK);
     bool audio_ok = (bsp_audio_init() == ESP_OK);
