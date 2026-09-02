@@ -58,6 +58,10 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
     }
 
     if (s_active == 0) {                        // voice = home (offline BLE mic)
+        // Any key wakes the screen first, then does its own job. Waking here rather
+        // than inside demo_voice_key means the long-press exit below also wakes,
+        // and a press is never consumed just to turn the backlight up.
+        demo_voice_wake();
         if (ok_exit) {
             demo_voice_exit();
             s_active = 1;                        // opt-in: go online, bind Feishu

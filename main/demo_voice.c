@@ -16,6 +16,7 @@
 #include "demo.h"
 
 #include "bsp_audio.h"
+#include "bsp_display.h"     // 低功耗模式调背光,见 VOICE_DIM_AFTER_MS
 #include "bsp_battery.h"
 #include "island_quota.h"
 #include "mascot.h"
@@ -376,6 +377,36 @@ done:
     vTaskDelete(NULL);
 }
 
+// Low-power mode, entered when the PC link has been down for a while. A 520 mAh
+// battery behind a 240x320 backlight at 100% does not last, and while
+// disconnected — in a pocket, or on the desk with the agent not running — nothing
+// on the screen is worth that current.
+//
+// Only the backlight and the render cadence change. The BLE stack keeps
+// advertising and the audio worker is untouched, so a reconnect and a key press
+// behave exactly as before; this must not become a state the device can get stuck
+// in.
+#define VOICE_DIM_AFTER_MS 20000     // link down this long -> dim
+#define VOICE_DIM_PERCENT  12        // low but legible indoors, not off: a black
+                                     // screen reads as a dead device
+#define VOICE_BRIGHT       100
+#define VOICE_TICK_MS      100       // render period, awake
+#define VOICE_TICK_DIM_MS  500       // render period, dimmed: the only thing moving
+                                     // is the link symbol
+static bool s_dimmed;
+static unsigned s_disconnected_ms;   // render-only: how long the link has been down
+
+// Any key press wakes the screen, whatever else that key does. Called from on_key
+// before the key is dispatched, so waking never costs the key its own action.
+void demo_voice_wake(void)
+{
+    s_disconnected_ms = 0;
+    if (!s_dimmed) return;
+    s_dimmed = false;
+    bsp_display_backlight(VOICE_BRIGHT);
+    if (s_timer != NULL) lv_timer_set_period(s_timer, VOICE_TICK_MS);
+}
+
 static void render(lv_timer_t *t)
 {
     (void)t;
@@ -394,6 +425,27 @@ static void render(lv_timer_t *t)
     xSemaphoreGive(s_lock);
     int lvl = s_level;          // plain volatile: deliberately not under s_lock,
                                 // which the audio worker takes on its hot path
+
+    // Dim on a sustained disconnect; come straight back on reconnect. Recording
+    // never dims — the timer and level meter are the whole point of that screen,
+    // and a take cannot start without the link anyway.
+    //
+    // The dwell is counted in render ticks rather than from a timestamp so it does
+    // not need a clock: the period doubles when dimmed, which only makes the
+    // already-dimmed case cheaper. A blip that clears within the dwell costs
+    // nothing, which is why the link symbol reading false for a moment (see the
+    // note in the worker) cannot flicker the backlight.
+    if (st == ST_CONNECTING) {
+        unsigned period = s_dimmed ? VOICE_TICK_DIM_MS : VOICE_TICK_MS;
+        if (s_disconnected_ms < VOICE_DIM_AFTER_MS) s_disconnected_ms += period;
+        if (!s_dimmed && s_disconnected_ms >= VOICE_DIM_AFTER_MS) {
+            s_dimmed = true;
+            bsp_display_backlight(VOICE_DIM_PERCENT);
+            if (s_timer != NULL) lv_timer_set_period(s_timer, VOICE_TICK_DIM_MS);
+        }
+    } else {
+        demo_voice_wake();      // connected again, or recording: full brightness
+    }
 
     char battery[8];
     snprintf(battery, sizeof(battery), s_battery_percent >= 0 ? "%d%%" : "--%%",
@@ -492,6 +544,12 @@ static void render(lv_timer_t *t)
 void demo_voice_enter(void)
 {
     s_state = ST_CONNECTING;
+    // Enter awake: this screen is reached at boot and on the way back from Feishu,
+    // and inheriting a dimmed backlight from a previous visit would look like a
+    // fault. s_timer is created below at VOICE_TICK_MS to match.
+    s_dimmed = false;
+    s_disconnected_ms = 0;
+    bsp_display_backlight(VOICE_BRIGHT);
     s_want_record = false;
     s_closing = false;
     s_pending_ctrl = 0;
@@ -555,7 +613,7 @@ void demo_voice_enter(void)
         lv_label_set_text(s_sub, "内存不足，请重启设备");
         return;
     }
-    s_timer = lv_timer_create(render, 100, NULL);
+    s_timer = lv_timer_create(render, VOICE_TICK_MS, NULL);
     if (xTaskCreate(worker_task, "voice", 6144, NULL, 6, &s_worker) != pdPASS) {
         s_state = ST_ERROR;
     }
@@ -565,6 +623,10 @@ void demo_voice_exit(void)
 {
     s_closing = true;
     s_want_record = false;
+    // Hand the next screen a bright backlight. Leaving it dimmed would make
+    // onboarding look broken, and that screen has no dim logic of its own.
+    s_dimmed = false;
+    bsp_display_backlight(VOICE_BRIGHT);
     if (s_worker != NULL && s_worker_done != NULL) {
         xSemaphoreTake(s_worker_done, pdMS_TO_TICKS(2000));
     }
