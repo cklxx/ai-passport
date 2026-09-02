@@ -25,6 +25,10 @@ a button on the card, speak, and text appears at your cursor.
   revising the sentence, then presses Enter.
 - **The screen tells you it is working.** A spark above a cup grows with your
   voice, so a live link never looks like a dead one.
+- **The screen goes dark when nothing is happening.** Twenty idle seconds turn the
+  backlight off entirely, and any key or a reconnect brings it straight back. The
+  backlight is the largest draw on a 520 mAh cell, and it was previously running at
+  full brightness all day.
 - **Starts at login and heals itself.** The agent reconnects when the card sleeps
   or walks out of range; launchd restarts it if it dies.
 
@@ -32,11 +36,20 @@ a button on the card, speak, and text appears at your cursor.
 
 | Key | Action |
 | --- | --- |
-| DOWN | Start / stop recording |
+| DOWN | Start / stop recording (fires on press, not release) |
 | OK | Stop and send (fires on press, not release) |
 | UP | Delete the last utterance |
-| UP, held | Erase continuously; stops the moment you let go |
+| UP, held 1 s | Erase continuously; stops the moment you let go |
 | OK, held 2.5 s | Leave voice mode for Wi-Fi / Feishu setup |
+
+Presses act on contact, not on release. Waiting for a click means waiting for the
+finger to lift *and* for the ~180 ms double-click window to expire, which is the
+single longest delay in the input path and the one that reads as "the button is
+slow". Both actions are recoverable — press again, say it again — so learning
+whether a second click follows buys nothing. The two hold thresholds differ because
+the waits are felt differently: erase is a direct manipulation and must start
+quickly, while leaving the screen interrupts a recording and should be hard to do
+by accident.
 
 ## Install
 
@@ -112,8 +125,17 @@ sent nothing.
 **An output stream that never closes.** A streaming recogniser tolerates latency
 but not holes. Injecting silence makes its voice-activity detector cut a sentence
 in half, and closing the audio stream between utterances looks like the microphone
-being unplugged — so the stream is opened once, and a 100 ms prebuffer absorbs BLE
+being unplugged — so the stream is opened once, and a 160 ms prebuffer absorbs BLE
 jitter.
+
+That prebuffer is not generous, and it is the one value most likely to look
+wasteful to a newcomer. Because the queue only moves in whole frames it is 180 ms
+deep in practice, and the measured low-water mark reaches 30 ms in sessions whose
+worst frame-arrival gap was 178 ms — the cushion runs at full stretch. Two attempts
+to cut it (90 ms, 100 ms) both lost the first word while every counter still read
+healthy. [`docs/software-design/voice-link-baseline.md`](docs/software-design/voice-link-baseline.md)
+records the measurements; **read it before changing any latency or buffer value on
+this link.**
 
 **Control codes outrank audio.** They share the BLE mbuf pool with a stream that
 takes a block every 30 ms. One lost audio frame is 30 ms of sound; one lost STOP
@@ -123,11 +145,49 @@ the host runs the repetition, so a two-second hold costs the link two
 notifications instead of eighty — and the host carries a 10 s dead-man deadline in
 case the closing edge is the one that goes missing.
 
+**Every failure gets a counter, and the counters must add up.** A dry mbuf pool is
+caught at two points — the 2-byte header failing to get a block, or the header
+getting one and the 480-byte payload failing to get the rest — and for a while only
+the first was reported, which understated pool exhaustion by up to 4× and let a
+real regression read as "the device seems slow". The session line now prints both,
+plus `unacct`: attempts minus every reported outcome, which must be 0. Any other
+value means a failure path exists that nothing counts. `msys_min` reports the
+free-mbuf low-water mark, which reads 72 of 72 on a healthy take — the pool is
+never touched when the link keeps up.
+
+One trap in reading those numbers: `tried` counts notification *attempts*, not
+frames. A rejected frame is retried once, so it increments `tried` twice, and
+`tried − sent = 2 × lost` holds exactly. Read the host's `lost=` for the real
+figure, never `sent/tried`.
+
 **Signal conditioning on the device.** Input gain sits at 24 dB, not 30 — at 30 an
 ordinary speaking voice clipped, and clipping is unrecoverable distortion that a
 recogniser degrades sharply on. A one-pole 90 Hz high-pass removes handling noise
 and body rumble, which carried 11% of the energy while the 300-3400 Hz speech band
-held only 36%.
+held only 36%. Moving that corner to 150 Hz was tried and reverted: sub-300 Hz
+energy measured *higher* afterwards, contradicting the theory, so the change was not
+justified whatever the explanation.
+
+**The level meter is charged to the frame budget.** RMS runs every other frame over
+one sample in eight, because it sits between the capture read and the BLE notify on
+a single core. Sampling every sample measurably cut delivery from 99% to 95% — a
+detail that only shows up if you measure the link rather than the meter.
+
+## What still is not solved
+
+Roughly 7% of takes have lost frames, in episodes that arrive and leave on their
+own. The mechanism is understood: delivered notifications fall from ~33.6/s to
+~29/s while the device produces a fixed 33.3/s, and the deficit backs up into the
+mbuf pool until allocation fails. What triggers the drop is not — the connection
+interval would answer it and is not yet logged. Five such episodes were measured,
+each self-resolving, worst single take 35.6%.
+
+The counters and the reasoning are in
+[`docs/software-design/voice-link-baseline.md`](docs/software-design/voice-link-baseline.md),
+including the assumptions that turned out to be false. It is worth reading for one
+reason beyond this link: several of those wrong turns came from instruments that
+read the same when healthy and when broken, which is worse than having no
+instrument at all.
 
 ## Also on the card
 

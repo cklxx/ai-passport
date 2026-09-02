@@ -7,9 +7,9 @@
 // drift), while one byte per sample halves the frames per second the link must
 // carry. See VOICE_CHUNK_SAMPLES for why the frame RATE is the binding limit.
 //
-//   OK   = start / stop the mic
-//   DOWN = 发送  (control -> PC injects Enter)
-//   UP   = 删除  (control -> PC injects Backspace)
+//   DOWN = start / stop the mic
+//   OK   = 发送  (stop if recording, then control -> PC injects Enter)
+//   UP   = 删除  (control -> PC injects Backspace; held = erase continuously)
 //
 // Audio never touches the LVGL/button task: a worker owns capture + encode +
 // notify. Capture streams in small blocks; no whole-recording buffer.
