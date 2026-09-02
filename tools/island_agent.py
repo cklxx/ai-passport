@@ -550,14 +550,18 @@ def cmd_recv_ble(args):
             qlen[0] -= n
             if n < len(f):
                 q.appendleft(f[n:])
-        # Only sample the low-water mark on callbacks that consumed real audio.
-        # This used to sample unconditionally, which made the statistic useless: the
-        # dry tail after STOP runs several callbacks with an empty queue, all before
-        # the session-end print, so lowater read 0 ms in EVERY session — the
-        # zero-loss ones and the 16%-loss ones alike. A number that is identical
-        # under both is measuring nothing, and it was cited repeatedly as evidence
-        # that the prebuffer cushion goes untouched.
-        if got and qlen[0] < stats["lo"]:
+        # Only sample the low-water mark on callbacks that consumed real audio while
+        # the session was still running. This used to sample unconditionally, which
+        # made the statistic useless: after STOP the queue drains to empty over
+        # several callbacks — all before the session-end print — so lowater read
+        # 0 ms in EVERY session, the zero-loss ones and the 16%-loss ones alike. A
+        # number identical under both measures nothing, and it was cited repeatedly
+        # as evidence that the prebuffer cushion goes untouched.
+        #
+        # The `got` guard alone was not enough: the first few post-STOP callbacks
+        # still consume the last frames, so they pass it while reporting a depth that
+        # says nothing about mid-session health. Gate on the STOP stamp instead.
+        if got and not stats["t1"] and qlen[0] < stats["lo"]:
             stats["lo"] = qlen[0]         # sampled post-consumption: the real dip
         if got == 0:
             # Dry queue. Elastic take never engages here: BLE delivers one whole
