@@ -386,13 +386,19 @@ done:
 // advertising and the audio worker is untouched, so a reconnect and a key press
 // behave exactly as before; this must not become a state the device can get stuck
 // in.
-#define VOICE_DIM_AFTER_MS 20000     // link down this long -> dim
-#define VOICE_DIM_PERCENT  12        // low but legible indoors, not off: a black
-                                     // screen reads as a dead device
-#define VOICE_BRIGHT       100
+#define VOICE_DIM_AFTER_MS 20000     // link down this long -> screen off
+#define VOICE_DIM_PERCENT  0         // fully off. The panel itself stays on, so a
+                                     // key press brings the image straight back with
+                                     // nothing to redraw or re-init.
+#define VOICE_BRIGHT       30        // normal brightness. 100% was never needed —
+                                     // this is a 240x320 panel read at arm's length
+                                     // indoors, and the backlight is the largest
+                                     // draw on a 520 mAh battery.
 #define VOICE_TICK_MS      100       // render period, awake
-#define VOICE_TICK_DIM_MS  500       // render period, dimmed: the only thing moving
-                                     // is the link symbol
+#define VOICE_TICK_DIM_MS  1000      // render period with the backlight off. Nothing
+                                     // is visible, so this only has to be often
+                                     // enough to notice the link coming back — the
+                                     // agent's own reconnect takes longer than this.
 static bool s_dimmed;
 static unsigned s_disconnected_ms;   // render-only: how long the link has been down
 
@@ -410,6 +416,15 @@ void demo_voice_wake(void)
 static void render(lv_timer_t *t)
 {
     (void)t;
+    // With the backlight off, the only thing this tick is for is noticing the link
+    // come back. Everything below draws or measures for a screen nobody can see, so
+    // take the state and leave: no battery ADC conversion, no snprintf, no label
+    // updates, and above all no LVGL invalidation — a redraw costs SPI flushes out
+    // of the audio worker's budget on this single core.
+    if (s_dimmed) {
+        if (s_state != ST_CONNECTING) demo_voice_wake();
+        return;
+    }
     voice_state_t st;
     unsigned ms;
     unsigned tx, ok;
