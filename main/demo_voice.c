@@ -400,13 +400,18 @@ done:
                                      // enough to notice the link coming back — the
                                      // agent's own reconnect takes longer than this.
 static bool s_dimmed;
-static unsigned s_disconnected_ms;   // render-only: how long the link has been down
+static unsigned s_idle_ms;           // render-only: how long nothing has happened
+
+// Which states let the screen go dark. Everything except recording: waiting for
+// the agent, connected-and-idle on a desk, and a failed init all show a picture
+// that does not change.
+static inline bool state_dims(voice_state_t st) { return st != ST_RECORDING; }
 
 // Any key press wakes the screen, whatever else that key does. Called from on_key
 // before the key is dispatched, so waking never costs the key its own action.
 void demo_voice_wake(void)
 {
-    s_disconnected_ms = 0;
+    s_idle_ms = 0;
     if (!s_dimmed) return;
     s_dimmed = false;
     bsp_display_backlight(VOICE_BRIGHT);
@@ -422,9 +427,16 @@ static void render(lv_timer_t *t)
     // updates, and above all no LVGL invalidation — a redraw costs SPI flushes out
     // of the audio worker's budget on this single core.
     if (s_dimmed) {
-        if (s_state != ST_CONNECTING) demo_voice_wake();
+        if (!state_dims(s_state)) demo_voice_wake();
         return;
     }
+    // Outside s_lock on purpose. bsp_battery_soc() is a blocking I2C transaction
+    // (~0.5 ms on a 100 kHz bus), and the audio worker takes this same mutex once
+    // per 30 ms frame — see the note above s_level. s_battery_percent is written
+    // only here and in enter(), never by the worker, so it never needed the lock.
+    int bp = bsp_battery_soc();
+    if (bp >= 0) s_battery_percent = bp;
+
     voice_state_t st;
     unsigned ms;
     unsigned tx, ok;
@@ -433,33 +445,34 @@ static void render(lv_timer_t *t)
     ms = s_elapsed_ms;
     tx = s_tx_frames;
     ok = s_tx_ok;
-    int bp = bsp_battery_soc();
-    if (bp >= 0) s_battery_percent = bp;
     bool have_q = s_have_quota;
     island_quota_t q = s_quota;
     xSemaphoreGive(s_lock);
     int lvl = s_level;          // plain volatile: deliberately not under s_lock,
                                 // which the audio worker takes on its hot path
 
-    // Dim on a sustained disconnect; come straight back on reconnect. Recording
-    // never dims — the timer and level meter are the whole point of that screen,
-    // and a take cannot start without the link anyway.
+    // Dim on a sustained idle; come straight back the moment anything happens.
+    // ST_RECORDING never dims — the timer and level meter are the whole point of
+    // that screen. ST_IDLE does: connected to the agent and sitting on a desk is
+    // the normal all-day state, and nothing on that screen moves. So does
+    // ST_ERROR, which otherwise sits lit until the battery is flat.
     //
     // The dwell is counted in render ticks rather than from a timestamp so it does
-    // not need a clock: the period doubles when dimmed, which only makes the
-    // already-dimmed case cheaper. A blip that clears within the dwell costs
-    // nothing, which is why the link symbol reading false for a moment (see the
-    // note in the worker) cannot flicker the backlight.
-    if (st == ST_CONNECTING) {
-        unsigned period = s_dimmed ? VOICE_TICK_DIM_MS : VOICE_TICK_MS;
-        if (s_disconnected_ms < VOICE_DIM_AFTER_MS) s_disconnected_ms += period;
-        if (!s_dimmed && s_disconnected_ms >= VOICE_DIM_AFTER_MS) {
+    // not need a clock. Every tick reaching here is an awake tick — a dimmed one
+    // returned at the top of render() — so VOICE_TICK_MS is the only period that
+    // can be added, and the sum stops growing for good once the backlight goes
+    // off. A blip that clears within the dwell costs nothing, which is why the
+    // link symbol reading false for a moment (see the note in the worker) cannot
+    // flicker the backlight.
+    if (state_dims(st)) {
+        s_idle_ms += VOICE_TICK_MS;
+        if (s_idle_ms >= VOICE_DIM_AFTER_MS) {
             s_dimmed = true;
             bsp_display_backlight(VOICE_DIM_PERCENT);
             if (s_timer != NULL) lv_timer_set_period(s_timer, VOICE_TICK_DIM_MS);
         }
     } else {
-        demo_voice_wake();      // connected again, or recording: full brightness
+        demo_voice_wake();      // recording: full brightness, dwell reset
     }
 
     char battery[8];
@@ -563,7 +576,7 @@ void demo_voice_enter(void)
     // and inheriting a dimmed backlight from a previous visit would look like a
     // fault. s_timer is created below at VOICE_TICK_MS to match.
     s_dimmed = false;
-    s_disconnected_ms = 0;
+    s_idle_ms = 0;
     bsp_display_backlight(VOICE_BRIGHT);
     s_want_record = false;
     s_closing = false;
